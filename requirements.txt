@@ -1,4 +1,4 @@
 # requirements.txt
-fastapi
-uvicorn[standard]
-prometheus-fastapi-instrumentator
+requests
+scikit-learn
+numpy
