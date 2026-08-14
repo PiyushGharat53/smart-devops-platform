@@ -1,0 +1,747 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SENTINEL // TELEMETRY COMMAND</title>
+<style>
+  :root {
+    --void: #030504;
+    --panel: #071310;
+    --panel-2: #0a1815;
+    --line: #14332a;
+    --line-bright: #1f4d3e;
+    --phosphor: #2bffa0;
+    --phosphor-dim: #144d38;
+    --amber: #ffb84d;
+    --amber-dim: #5c4419;
+    --red: #ff3b3b;
+    --red-dim: #4d1414;
+    --cyan: #2dd4ff;
+    --text-bright: #d3fbe8;
+    --text-mid: #7fa393;
+    --text-dim: #3d5449;
+    --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--void);
+    color: var(--text-mid);
+    font-family: var(--mono);
+    min-height: 100vh;
+  }
+
+  body {
+    padding: 20px;
+    background-image:
+      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(43,255,160,0.06), transparent 60%),
+      radial-gradient(ellipse 700px 500px at 100% 10%, rgba(45,212,255,0.05), transparent 60%),
+      linear-gradient(rgba(43,255,160,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(43,255,160,0.025) 1px, transparent 1px);
+    background-size: auto, auto, 34px 34px, 34px 34px;
+  }
+
+  .shell {
+    max-width: 1320px;
+    margin: 0 auto;
+  }
+
+  /* ============ HEADER ============ */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(43,255,160,0.04), transparent);
+    margin-bottom: 14px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    font-size: 15px;
+    letter-spacing: 6px;
+    color: var(--phosphor);
+    text-shadow: 0 0 12px rgba(43,255,160,0.5);
+    font-weight: 700;
+  }
+
+  .brand-sub {
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 11px;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+  }
+
+  .sys-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    border: 1px solid var(--line-bright);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 2px;
+  }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--phosphor); box-shadow: 0 0 8px var(--phosphor); }
+  .dot.pulse { animation: dotpulse 1.6s ease-in-out infinite; }
+  @keyframes dotpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* ============ GRID LAYOUT ============ */
+  .grid {
+    display: grid;
+    grid-template-columns: 320px 1fr 300px;
+    grid-template-areas:
+      "core   waveform  controls"
+      "core   chart     nodes"
+      "console console  console";
+    gap: 14px;
+  }
+
+  @media (max-width: 980px) {
+    .grid {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "core"
+        "waveform"
+        "chart"
+        "controls"
+        "nodes"
+        "console";
+    }
+  }
+
+  .panel {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--phosphor-dim), transparent);
+  }
+
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .panel-head .tag {
+    color: var(--phosphor-dim);
+    font-size: 9px;
+  }
+
+  .panel-body { padding: 16px; }
+
+  /* ============ CORE STATUS HEX (signature element) ============ */
+  #corePanel { grid-area: core; display: flex; flex-direction: column; }
+
+  .core-stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+  }
+
+  .core-svg { width: 100%; max-width: 260px; overflow: visible; }
+
+  .core-ring { fill: none; stroke: var(--phosphor-dim); stroke-width: 1; }
+  .core-ring-sweep {
+    fill: none;
+    stroke: var(--phosphor);
+    stroke-width: 2;
+    stroke-linecap: round;
+    filter: drop-shadow(0 0 6px currentColor);
+    transform-origin: center;
+    animation: sweep 3s linear infinite;
+  }
+  @keyframes sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .core-hex {
+    fill: rgba(43,255,160,0.03);
+    stroke: var(--phosphor);
+    stroke-width: 1.4;
+    filter: drop-shadow(0 0 10px currentColor);
+    transition: stroke 0.4s ease, fill 0.4s ease;
+  }
+
+  .core-label {
+    fill: var(--text-bright);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-anchor: middle;
+    text-transform: uppercase;
+  }
+  .core-sub {
+    fill: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 7px;
+    letter-spacing: 1.5px;
+    text-anchor: middle;
+  }
+
+  .core-footer {
+    padding: 14px 18px 18px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+  }
+  .core-footer .row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .core-footer .k { color: var(--text-dim); }
+  .core-footer .v { color: var(--text-bright); }
+
+  /* ============ WAVEFORM (EKG) ============ */
+  #wavePanel { grid-area: waveform; }
+  .ekg-wrap { height: 100px; position: relative; overflow: hidden; background: #020403; margin: 0 14px 14px; border: 1px solid var(--line); }
+  .ekg-wrap svg { position: absolute; top: 0; left: 0; height: 100%; width: 200%; }
+  #ekgPath { fill: none; stroke-width: 2; stroke: var(--phosphor); filter: drop-shadow(0 0 5px currentColor); transition: stroke 0.4s ease; }
+  .ekg-anim { animation: scrollekg linear infinite; }
+  @keyframes scrollekg { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+  .wave-status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 14px 14px;
+  }
+  .wave-status-text { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; transition: color 0.4s ease; }
+  .wave-status-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+
+  /* ============ TRAFFIC CHART ============ */
+  #chartPanel { grid-area: chart; display: flex; flex-direction: column; }
+  #trafficCanvas { width: 100%; height: 180px; display: block; }
+  .chart-legend { display: flex; gap: 16px; padding: 0 14px 12px; font-size: 10px; color: var(--text-dim); }
+  .chart-legend .item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 8px; height: 8px; }
+
+  /* ============ DEFENSE CONTROLS ============ */
+  #controlsPanel { grid-area: controls; }
+
+  .toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .toggle-row:last-of-type { border-bottom: none; }
+
+  .toggle-label { font-size: 11px; letter-spacing: 1px; color: var(--text-bright); text-transform: uppercase; }
+  .toggle-label small { display: block; font-size: 9px; color: var(--text-dim); letter-spacing: 0.5px; margin-top: 3px; text-transform: none; }
+
+  .switch {
+    width: 52px;
+    height: 26px;
+    border: 1px solid var(--line-bright);
+    background: #050b09;
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    background: var(--text-dim);
+    transition: all 0.2s ease;
+    box-shadow: 0 0 0 rgba(43,255,160,0);
+  }
+  .switch.on { border-color: var(--phosphor); background: rgba(43,255,160,0.08); }
+  .switch.on::after {
+    left: 27px;
+    background: var(--phosphor);
+    box-shadow: 0 0 10px var(--phosphor);
+  }
+
+  .shield-indicator {
+    margin-top: 6px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .shield-indicator .dot { width: 8px; height: 8px; }
+
+  /* ============ NODE STATUS GRID ============ */
+  #nodesPanel { grid-area: nodes; }
+  .node-list { display: flex; flex-direction: column; gap: 10px; }
+  .node-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .node-name { font-size: 11px; color: var(--text-bright); letter-spacing: 0.5px; }
+  .node-meta { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+  .node-status { display: flex; align-items: center; gap: 6px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
+  .node-status .dot { width: 6px; height: 6px; }
+
+  /* ============ CONSOLE ============ */
+  #consolePanel { grid-area: console; }
+  #consoleLog {
+    height: 190px;
+    overflow-y: auto;
+    background: #020403;
+    margin: 0 14px 14px;
+    border: 1px solid var(--line);
+    padding: 10px 12px;
+    font-size: 11.5px;
+    line-height: 1.75;
+  }
+  #consoleLog div { white-space: pre-wrap; word-break: break-word; }
+  .ts { color: var(--text-dim); }
+  .log-ok { color: var(--phosphor); }
+  .log-warn { color: var(--amber); }
+  .log-err { color: var(--red); }
+  .log-info { color: var(--cyan); }
+
+  #consoleLog::-webkit-scrollbar { width: 8px; }
+  #consoleLog::-webkit-scrollbar-track { background: transparent; }
+  #consoleLog::-webkit-scrollbar-thumb { background: var(--line-bright); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ekg-anim, .core-ring-sweep, .dot.pulse { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="header">
+    <div class="brand">
+      <span class="brand-mark">SENTINEL</span>
+      <span class="brand-sub">// Telemetry Command · my-patient</span>
+    </div>
+    <div class="header-right">
+      <div class="sys-pill"><span class="dot pulse" id="headerDot"></span><span id="headerStatus">Initializing</span></div>
+      <div id="clock">--:--:--</div>
+    </div>
+  </div>
+
+  <div class="grid">
+
+    <!-- CORE STATUS -->
+    <div class="panel" id="corePanel">
+      <div class="panel-head">Core Status <span class="tag">SYS-01</span></div>
+      <div class="core-stage">
+        <svg class="core-svg" viewBox="0 0 220 220">
+          <circle class="core-ring" cx="110" cy="110" r="95"></circle>
+          <circle class="core-ring" cx="110" cy="110" r="78" stroke-dasharray="2 6"></circle>
+          <circle class="core-ring-sweep" id="coreSweep" cx="110" cy="110" r="86" stroke-dasharray="30 250"></circle>
+          <polygon class="core-hex" id="coreHex" points="110,40 168,75 168,145 110,180 52,145 52,75"></polygon>
+          <text class="core-label" id="coreLabel" x="110" y="106">ALIVE</text>
+          <text class="core-sub" x="110" y="122">HEALTH ENDPOINT</text>
+        </svg>
+      </div>
+      <div class="core-footer">
+        <div class="row"><span class="k">uptime_ping</span><span class="v" id="lastPing">--</span></div>
+        <div class="row"><span class="k">poll_interval</span><span class="v">3000ms</span></div>
+        <div class="row"><span class="k">target</span><span class="v">localhost:8000</span></div>
+      </div>
+    </div>
+
+    <!-- EKG WAVEFORM -->
+    <div class="panel" id="wavePanel">
+      <div class="panel-head">Live System Health <span class="tag">EKG-01</span></div>
+      <div class="wave-status-row" style="padding-top:14px;">
+        <div>
+          <div class="wave-status-text" id="waveStatusText">Connecting...</div>
+          <div class="wave-status-sub" id="waveStatusSub">Awaiting first health check</div>
+        </div>
+      </div>
+      <div class="ekg-wrap">
+        <svg viewBox="0 0 800 100" preserveAspectRatio="none" class="ekg-anim" id="ekgSvg" style="animation-duration: 4s;">
+          <path id="ekgPath" d="M0,50 L60,50 L75,50 L85,12 L95,88 L105,50 L120,50 L400,50 L415,50 L425,12 L435,88 L445,50 L460,50 L800,50
+                                 L860,50 L875,12 L885,88 L895,50 L910,50 L1190,50 L1205,50 L1215,12 L1225,88 L1235,50 L1250,50 L1600,50"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- TRAFFIC CHART -->
+    <div class="panel" id="chartPanel">
+      <div class="panel-head">Traffic Rate <span class="tag">req/s</span></div>
+      <canvas id="trafficCanvas"></canvas>
+      <div class="chart-legend">
+        <div class="item"><span class="swatch" style="background:var(--phosphor)"></span>request rate</div>
+        <div class="item"><span class="swatch" style="background:var(--amber)"></span>threshold</div>
+      </div>
+    </div>
+
+    <!-- DEFENSE CONTROLS -->
+    <div class="panel" id="controlsPanel">
+      <div class="panel-head">Defense Controls <span class="tag">SHIELD</span></div>
+      <div class="panel-body">
+        <div class="toggle-row">
+          <div class="toggle-label">Shields<small>POST /defense/enable</small></div>
+          <div class="switch" id="switchEnable"></div>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-label">Stand Down<small>POST /defense/disable</small></div>
+          <div class="switch" id="switchDisable"></div>
+        </div>
+        <div class="shield-indicator">
+          <span class="dot" id="shieldDot"></span>
+          <span id="shieldText">STATUS UNKNOWN</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- NODE STATUS -->
+    <div class="panel" id="nodesPanel">
+      <div class="panel-head">Node Status <span class="tag">CLUSTER</span></div>
+      <div class="panel-body node-list">
+        <div class="node-item">
+          <div>
+            <div class="node-name">web-1</div>
+            <div class="node-meta">FastAPI :8000</div>
+          </div>
+          <div class="node-status"><span class="dot" id="nodeWebDot"></span><span id="nodeWebText">--</span></div>
+        </div>
+        <div class="node-item">
+          <div>
+            <div class="node-name">prometheus</div>
+            <div class="node-meta">:9090</div>
+          </div>
+          <div class="node-status"><span class="dot" id="nodePromDot"></span><span id="nodePromText">--</span></div>
+        </div>
+        <div class="node-item">
+          <div>
+            <div class="node-name">grafana</div>
+            <div class="node-meta">:3000</div>
+          </div>
+          <div class="node-status"><span class="dot" id="nodeGrafDot"></span><span id="nodeGrafText">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONSOLE -->
+    <div class="panel" id="consolePanel">
+      <div class="panel-head">Event Log <span class="tag">CONSOLE</span></div>
+      <div id="consoleLog"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // ===================== CONFIG =====================
+  const HEALTH_URL   = 'http://localhost:8000/health';
+  const ENABLE_URL   = 'http://localhost:8000/defense/enable';
+  const DISABLE_URL  = 'http://localhost:8000/defense/disable';
+  const PROM_URL     = 'http://localhost:9090/';
+  const GRAFANA_URL  = 'http://localhost:3000/';
+  const POLL_MS      = 3000;
+  const RATE_THRESHOLD = 5.0;
+
+  // ===================== DOM refs =====================
+  const clockEl        = document.getElementById('clock');
+  const headerDot       = document.getElementById('headerDot');
+  const headerStatus    = document.getElementById('headerStatus');
+
+  const coreHex         = document.getElementById('coreHex');
+  const coreLabel       = document.getElementById('coreLabel');
+  const coreSweep       = document.getElementById('coreSweep');
+  const lastPing        = document.getElementById('lastPing');
+
+  const waveStatusText  = document.getElementById('waveStatusText');
+  const waveStatusSub   = document.getElementById('waveStatusSub');
+  const ekgPath         = document.getElementById('ekgPath');
+  const ekgSvg          = document.getElementById('ekgSvg');
+
+  const switchEnable    = document.getElementById('switchEnable');
+  const switchDisable   = document.getElementById('switchDisable');
+  const shieldDot       = document.getElementById('shieldDot');
+  const shieldText      = document.getElementById('shieldText');
+
+  const nodeWebDot = document.getElementById('nodeWebDot'), nodeWebText = document.getElementById('nodeWebText');
+  const nodePromDot = document.getElementById('nodePromDot'), nodePromText = document.getElementById('nodePromText');
+  const nodeGrafDot = document.getElementById('nodeGrafDot'), nodeGrafText = document.getElementById('nodeGrafText');
+
+  const consoleLog = document.getElementById('consoleLog');
+  const canvas = document.getElementById('trafficCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // ===================== helpers =====================
+  function ts() { return new Date().toLocaleTimeString('en-US', { hour12: false }); }
+
+  function log(message, level = 'ok') {
+    const line = document.createElement('div');
+    const cls = { ok: 'log-ok', warn: 'log-warn', err: 'log-err', info: 'log-info' }[level] || 'log-ok';
+    line.innerHTML = `<span class="ts">[${ts()}]</span> <span class="${cls}">${message}</span>`;
+    consoleLog.appendChild(line);
+    consoleLog.scrollTop = consoleLog.scrollHeight;
+  }
+
+  function setDot(el, colorVar) {
+    el.style.background = `var(${colorVar})`;
+    el.style.boxShadow = `0 0 8px var(${colorVar})`;
+  }
+
+  function tickClock() { clockEl.textContent = ts(); }
+
+  // ===================== vitals state =====================
+  let lastState = null; // 'alive' | 'shields' | 'unreachable'
+
+  function applyVitals(state) {
+    if (state === 'alive') {
+      headerStatus.textContent = 'Nominal';
+      headerDot.style.background = 'var(--phosphor)';
+      coreHex.style.stroke = 'var(--phosphor)';
+      coreHex.style.fill = 'rgba(43,255,160,0.03)';
+      coreLabel.textContent = 'ALIVE';
+      coreLabel.style.fill = 'var(--phosphor)';
+      coreSweep.style.stroke = 'var(--phosphor)';
+      waveStatusText.textContent = 'Backend Status: Alive';
+      waveStatusText.style.color = 'var(--phosphor)';
+      waveStatusSub.textContent = '200 OK — heartbeat nominal';
+      ekgPath.style.stroke = 'var(--phosphor)';
+      ekgSvg.style.animationDuration = '4s';
+      setDot(nodeWebDot, '--phosphor'); nodeWebText.textContent = 'ONLINE';
+    } else if (state === 'shields') {
+      headerStatus.textContent = 'Shields Active';
+      headerDot.style.background = 'var(--amber)';
+      coreHex.style.stroke = 'var(--amber)';
+      coreHex.style.fill = 'rgba(255,184,77,0.05)';
+      coreLabel.textContent = 'SHIELD';
+      coreLabel.style.fill = 'var(--amber)';
+      coreSweep.style.stroke = 'var(--amber)';
+      waveStatusText.textContent = 'Backend Status: Shields Active';
+      waveStatusText.style.color = 'var(--amber)';
+      waveStatusSub.textContent = '429 Too Many Requests — defense mode engaged';
+      ekgPath.style.stroke = 'var(--amber)';
+      ekgSvg.style.animationDuration = '1.3s';
+      setDot(nodeWebDot, '--amber'); nodeWebText.textContent = 'SHIELDED';
+    } else {
+      headerStatus.textContent = 'Under Attack / Unreachable';
+      headerDot.style.background = 'var(--red)';
+      coreHex.style.stroke = 'var(--red)';
+      coreHex.style.fill = 'rgba(255,59,59,0.05)';
+      coreLabel.textContent = 'DOWN';
+      coreLabel.style.fill = 'var(--red)';
+      coreSweep.style.stroke = 'var(--red)';
+      waveStatusText.textContent = 'Backend Status: Under Attack / Unreachable';
+      waveStatusText.style.color = 'var(--red)';
+      waveStatusSub.textContent = 'No response from host — connection failed';
+      ekgPath.style.stroke = 'var(--red)';
+      ekgSvg.style.animationDuration = '9s';
+      setDot(nodeWebDot, '--red'); nodeWebText.textContent = 'OFFLINE';
+    }
+  }
+
+  async function pollHealth() {
+    try {
+      const res = await fetch(HEALTH_URL, { method: 'GET', cache: 'no-store' });
+      lastPing.textContent = ts();
+
+      if (res.status === 200) {
+        if (lastState !== 'alive') log('Health check OK — backend alive.', 'ok');
+        applyVitals('alive'); lastState = 'alive';
+      } else if (res.status === 429) {
+        if (lastState !== 'shields') log('Health check returned 429 — shields active.', 'warn');
+        applyVitals('shields'); lastState = 'shields';
+      } else {
+        if (lastState !== 'unreachable') log(`Unexpected status ${res.status} from /health.`, 'err');
+        applyVitals('unreachable'); lastState = 'unreachable';
+      }
+    } catch (err) {
+      if (lastState !== 'unreachable') log('Connection failed — backend unreachable.', 'err');
+      applyVitals('unreachable'); lastState = 'unreachable';
+    }
+  }
+
+  // ===================== defense toggles =====================
+  let shieldState = false;
+
+  function reflectShieldUI() {
+    switchEnable.classList.toggle('on', shieldState === true);
+    switchDisable.classList.toggle('on', shieldState === false);
+    if (shieldState) {
+      setDot(shieldDot, '--amber');
+      shieldText.textContent = 'SHIELDS ENABLED';
+    } else {
+      setDot(shieldDot, '--phosphor');
+      shieldText.textContent = 'SHIELDS DISABLED';
+    }
+  }
+
+  async function callDefense(enable) {
+    const url = enable ? ENABLE_URL : DISABLE_URL;
+    log(`Sending POST ${enable ? '/defense/enable' : '/defense/disable'} ...`, 'info');
+    try {
+      const res = await fetch(url, { method: 'POST' });
+      if (res.ok) {
+        shieldState = enable;
+        reflectShieldUI();
+        log(enable ? 'Shields enabled successfully.' : 'Shields disabled successfully.', 'ok');
+      } else {
+        log(`Request failed with status ${res.status}.`, 'err');
+      }
+    } catch (err) {
+      log('Request failed — could not reach backend.', 'err');
+    }
+  }
+
+  switchEnable.addEventListener('click', () => callDefense(true));
+  switchDisable.addEventListener('click', () => callDefense(false));
+  reflectShieldUI();
+
+  // ===================== node reachability (prometheus / grafana) =====================
+  // Browsers can't read cross-origin status codes without CORS, so this uses a
+  // no-cors probe: the fetch promise resolving means the socket connected,
+  // rejecting means it didn't (host down / port closed / DNS failure).
+  async function probeNode(url, dotEl, textEl) {
+    try {
+      await fetch(url, { mode: 'no-cors', cache: 'no-store' });
+      setDot(dotEl, '--phosphor');
+      textEl.textContent = 'ONLINE';
+    } catch (err) {
+      setDot(dotEl, '--red');
+      textEl.textContent = 'OFFLINE';
+    }
+  }
+
+  function pollNodes() {
+    probeNode(PROM_URL, nodePromDot, nodePromText);
+    probeNode(GRAFANA_URL, nodeGrafDot, nodeGrafText);
+  }
+
+  // ===================== traffic chart (canvas) =====================
+  // Live request-rate values aren't exposed to the browser (Prometheus
+  // returns text-format metrics with CORS restrictions, not JSON). This
+  // feeds the chart from a random-walk simulation seeded off the health
+  // poll, standing in until a JSON metrics endpoint is wired up — swap
+  // `nextSimulatedRate()` for a real fetch() once that exists.
+  const MAX_POINTS = 40;
+  let trafficData = Array(MAX_POINTS).fill(0.5);
+  let simRate = 0.8;
+
+  function nextSimulatedRate() {
+    const drift = (Math.random() - 0.5) * 1.2;
+    simRate = Math.max(0, simRate + drift);
+    if (Math.random() < 0.04) simRate += Math.random() * 8; // occasional spike
+    simRate *= 0.9; // decay back toward baseline
+    return Math.max(0, simRate);
+  }
+
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function drawChart() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    const maxVal = Math.max(RATE_THRESHOLD * 1.5, ...trafficData) || 1;
+    const padTop = 10, padBottom = 10;
+    const usableH = h - padTop - padBottom;
+
+    // gridlines
+    ctx.strokeStyle = 'rgba(43,255,160,0.08)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padTop + (usableH / 4) * i;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // threshold line
+    const threshY = padTop + usableH - (RATE_THRESHOLD / maxVal) * usableH;
+    ctx.strokeStyle = 'rgba(255,184,77,0.6)';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(0, threshY); ctx.lineTo(w, threshY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // data line
+    const stepX = w / (MAX_POINTS - 1);
+    ctx.beginPath();
+    trafficData.forEach((val, i) => {
+      const x = i * stepX;
+      const y = padTop + usableH - (val / maxVal) * usableH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = '#2bffa0';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#2bffa0';
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // fill under line
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, 'rgba(43,255,160,0.18)');
+    grad.addColorStop(1, 'rgba(43,255,160,0)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  function tickChart() {
+    trafficData.push(nextSimulatedRate());
+    if (trafficData.length > MAX_POINTS) trafficData.shift();
+    drawChart();
+  }
+
+  window.addEventListener('resize', () => { resizeCanvas(); drawChart(); });
+
+  // ===================== init =====================
+  log('Console initialized. Awaiting telemetry...', 'info');
+  applyVitals('unreachable');
+  resizeCanvas();
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  pollHealth();
+  setInterval(pollHealth, POLL_MS);
+
+  pollNodes();
+  setInterval(pollNodes, POLL_MS * 2);
+
+  setInterval(tickChart, 1000);
+  drawChart();
+</script>
+
+</body>
+</html>

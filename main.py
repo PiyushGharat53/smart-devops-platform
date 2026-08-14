@@ -1,12 +1,13 @@
 # main.py
 import os
 import signal
-
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Infra Monitoring Platform")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
@@ -55,3 +56,9 @@ def disable_defense():
     global DEFENSE_MODE
     DEFENSE_MODE = False
     return {"defense_mode": DEFENSE_MODE}
+
+
+@app.get("/")
+def serve_dashboard():
+    with open("static/index.html", "r") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
