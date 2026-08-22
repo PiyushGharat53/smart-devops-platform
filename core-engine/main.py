@@ -458,11 +458,21 @@ async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTas
         return {"message": "A pipeline run is already in progress.", "accepted": False}
 
     project = payload.get("project", "finsight")
-    target_file = payload.get("target_file", "server.js")
-    active_dir = FINSIGHT_DIR if project == "finsight" else MOCK_SERVICES_DIR
+    
+    # 🔴 Dynamically assign the correct target file and directory based on the workspace
+    if project == "finsight":
+        target_file = payload.get("target_file", "server.js")
+        active_dir = FINSIGHT_DIR if FINSIGHT_DIR and os.path.exists(FINSIGHT_DIR) else BASE_DIR
+    elif project == "chatbot":
+        target_file = "main.py"
+        active_dir = BASE_DIR
+    else:
+        target_file = "main.py"
+        active_dir = BASE_DIR
+
     commit_hash = f"manual-{random.randint(1000, 9999)}"
     author = payload.get("author", "DevOps Engineer")
-    message = payload.get("message", "Manual pre-flight test triggered from dashboard")
+    message = payload.get("message", f"Manual pre-flight test for {project} workspace")
 
     background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
     return {"message": "Manual pre-flight test triggered.", "accepted": True}

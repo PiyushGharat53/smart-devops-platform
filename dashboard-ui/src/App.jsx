@@ -320,9 +320,8 @@ export default function App() {
     setTriggeringPipeline(true);
     try {
       await axios.post(`${BACKEND_HTTP_URL}/api/pipeline/trigger`, {
-        project: activeWorkspace?.id === "finsight" ? "finsight" : "mock",
+        project: activeWorkspace?.id || "core",
       });
-      // Deployment state updates arrive over the websocket.
     } catch (error) {
       console.error("Manual pre-flight trigger failed", error);
     } finally {
