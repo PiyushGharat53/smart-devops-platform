@@ -10,7 +10,8 @@ import urllib.error
 import asyncio
 import random
 import json
-import re  # 🔴 NEW: Added for Secret Shield Regex scanning
+import re
+from motor.motor_asyncio import AsyncIOMotorClient  # 🔴 NEW: Async MongoDB Driver
 
 app = FastAPI()
 
@@ -21,6 +22,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 🔴 NEW: MongoDB Connection for Sentinel Audit Logs (Separate Database)
+# Replace with your Atlas URI or keep it ready for an environment variable
+MONGO_URI = os.getenv("SENTINEL_MONGO_URI", "mongodb+srv://hydrabolt:8eoqcZyYDfqOvKvb@cluster0.imzoavv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+db_client = AsyncIOMotorClient(MONGO_URI)
+sentinel_db = db_client["sentinel_ops"]
+logs_collection = sentinel_db["system_logs"]
+incidents_collection = sentinel_db["incidents"]
 
 FINSIGHT_API_URL = "https://finsight-erku.onrender.com"
 RENDER_FRONTEND_HOOK_URL = "https://api.render.com/deploy/srv-d6vu48s50q8c739s720g?key=1S8celCyeSo"
@@ -49,11 +58,19 @@ deployment_state = {
 
 healing_in_progress = set()
 
-def add_log(level, msg):
+# 🔴 Upgraded to save logs permanently to MongoDB Atlas
+async def add_log(level, msg):
     time_str = time.strftime("%H:%M:%S")
-    live_logs.append({"id": random.randint(10000, 99999), "level": level, "msg": msg, "time": time_str})
+    log_entry = {"id": random.randint(10000, 99999), "level": level, "msg": msg, "time": time_str}
+    
+    live_logs.append(log_entry)
     if len(live_logs) > 50:
         live_logs.pop(0)
+        
+    try:
+        await logs_collection.insert_one(log_entry)
+    except Exception:
+        pass
 
 def check_service_health(expected_id, name, url):
     try:
@@ -91,9 +108,7 @@ def check_finsight_system():
         
     return gateway_health, mongo_health
 
-# 🔴 NEW: The Secret Shield (Vault)
 def scan_for_secrets(file_path: str) -> tuple[bool, str]:
-    """Scans a file for exposed API keys and database credentials."""
     secret_patterns = {
         "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
         "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
@@ -114,14 +129,11 @@ def run_dynamic_preflight(repo_dir: str, target_file: str) -> tuple[bool, str]:
     config_path = os.path.join(repo_dir, ".sentinel-config.yml")
     
     if os.path.exists(config_path):
-        add_log("INFO", ".sentinel-config.yml detected. Executing custom tenant rules.")
         try:
             with open(config_path, 'r') as file:
                 config = yaml.safe_load(file)
-            
             commands = config.get("pre_flight", [])
             for cmd in commands:
-                add_log("TEST", f"Executing custom command: {cmd}")
                 res = subprocess.run(cmd, shell=True, cwd=repo_dir, capture_output=True, text=True)
                 if res.returncode != 0:
                     return False, f"Custom test failed:\n{res.stderr.strip()}"
@@ -129,16 +141,11 @@ def run_dynamic_preflight(repo_dir: str, target_file: str) -> tuple[bool, str]:
         except Exception as e:
             return False, f"Failed to parse config file: {e}"
 
-    add_log("INFO", "No custom config found. Falling back to Auto-Detection.")
     if os.path.exists(os.path.join(repo_dir, "package.json")):
-        add_log("INFO", "Stack Detected: Node.js. Verifying syntax...")
         res = subprocess.run(["node", "--check", target_file], cwd=repo_dir, capture_output=True, text=True)
         if res.returncode != 0:
             return False, res.stderr.strip().split("\n")[-1] if res.stderr else "Syntax verification failed"
         
-        # 🔴 NEW: Dependency Vulnerability Audit
-        add_log("INFO", "Running Dependency Vulnerability Audit (npm audit)...")
-        # Note: We use --audit-level=high to ignore low-level warnings that don't matter
         audit_res = subprocess.run(["npm", "audit", "--audit-level=high", "--json"], cwd=repo_dir, capture_output=True, text=True)
         if audit_res.returncode != 0:
             return False, "NPM Audit failed: High-severity vulnerabilities found in dependencies."
@@ -146,7 +153,6 @@ def run_dynamic_preflight(repo_dir: str, target_file: str) -> tuple[bool, str]:
         return True, f"{target_file} passed syntax and dependency audits."
     
     elif os.path.exists(os.path.join(repo_dir, "requirements.txt")) or target_file.endswith(".py"):
-        add_log("INFO", "Stack Detected: Python Ecosystem")
         res = subprocess.run(["python", "-m", "py_compile", target_file], cwd=repo_dir, capture_output=True, text=True)
         if res.returncode != 0:
             return False, res.stderr.strip().split("\n")[-1] if res.stderr else "Python compilation failed"
@@ -158,35 +164,47 @@ async def autonomous_heal(service_id: str, service_name: str):
     healing_in_progress.add(service_id)
     
     incident_id = f"INC-{random.randint(1000, 9999)}"
-    add_log("ANOMALY", f"[{incident_id}] {service_name} is DOWN. Initiating Auto-Heal...")
-    live_incidents.append({"id": incident_id, "service": service_name, "status": "Active (Healing...)"})
+    await add_log("ANOMALY", f"[{incident_id}] {service_name} is DOWN. Initiating Auto-Heal...")
+    
+    incident_doc = {"id": incident_id, "service": service_name, "status": "Active (Healing...)"}
+    live_incidents.append(incident_doc)
+    try:
+        await incidents_collection.insert_one(incident_doc)
+    except Exception:
+        pass
     
     if service_id == "gateway":
-        add_log("INFO", f"[{incident_id}] Sending emergency reboot command to Render Cloud API...")
+        await add_log("INFO", f"[{incident_id}] Sending emergency reboot command to Render Cloud API...")
         try:
             urllib.request.urlopen(RENDER_BACKEND_HOOK_URL, timeout=5)
-            add_log("INFO", f"[{incident_id}] Render accepted command. Container boot initiated. Cooldown active (60s)...")
+            await add_log("INFO", f"[{incident_id}] Render accepted command. Container boot initiated. Cooldown active (60s)...")
             await asyncio.sleep(60)
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                add_log("ANOMALY", f"[{incident_id}] Render Rate Limit (429). Cooling down for 60s...")
+                await add_log("ANOMALY", f"[{incident_id}] Render Rate Limit (429). Cooling down for 60s...")
                 await asyncio.sleep(60)
             else:
-                add_log("ANOMALY", f"[{incident_id}] Render API Error: {str(e)}")
+                await add_log("ANOMALY", f"[{incident_id}] Render API Error: {str(e)}")
         except Exception as e:
-            add_log("ANOMALY", f"[{incident_id}] Render API unreachable: {str(e)}")
+            await add_log("ANOMALY", f"[{incident_id}] Render API unreachable: {str(e)}")
     else:
         await asyncio.sleep(4)
-        add_log("INFO", f"[{incident_id}] Re-routing traffic and rebooting {service_name} containers...")
+        await add_log("INFO", f"[{incident_id}] Re-routing traffic and rebooting {service_name} containers...")
         await asyncio.sleep(3)
         if service_id in system_state:
             system_state[service_id]["status"] = "healthy"
             system_state[service_id]["latency"] = random.randint(35, 90)
     
-    add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restoration cycle complete.")
+    await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restoration cycle complete.")
+    
     for inc in live_incidents:
         if inc["id"] == incident_id:
             inc["status"] = "Resolved"
+            
+    try:
+        await incidents_collection.update_one({"id": incident_id}, {"$set": {"status": "Resolved"}})
+    except Exception:
+        pass
             
     healing_in_progress.remove(service_id)
 
@@ -199,79 +217,77 @@ async def run_real_deployment_pipeline(target_file: str, commit_hash: str, autho
         "message": message,
         "stage": f"Scanning code for security threats..."
     }
-    add_log("INFO", f"CI/CD Pipeline started for {target_file} (Commit: {commit_hash})")
+    await add_log("INFO", f"CI/CD Pipeline started for {target_file} (Commit: {commit_hash})")
     await asyncio.sleep(1)
 
     file_path = os.path.join(active_dir, target_file)
     if not os.path.exists(file_path):
         deployment_state["stage"] = f"File {target_file} not found. Aborting."
         deployment_state["status"] = "failed"
-        add_log("ANOMALY", f"Build failed: {file_path} does not exist.")
+        await add_log("ANOMALY", f"Build failed: {file_path} does not exist.")
         return
 
-    # 🔴 NEW: Step 1 - The Secret Shield
-    add_log("INFO", f"Engaging Secret Shield: Scanning for exposed API keys in {target_file}...")
+    await add_log("INFO", f"Engaging Secret Shield: Scanning for exposed API keys in {target_file}...")
     shield_passed, shield_msg = scan_for_secrets(file_path)
     if not shield_passed:
         deployment_state["stage"] = f"Security Violation: {shield_msg}"
         deployment_state["status"] = "failed"
-        add_log("ANOMALY", shield_msg)
+        await add_log("ANOMALY", shield_msg)
         await asyncio.sleep(2)
-        add_log("REMEDIATED", "Deployment aborted. Vault secured.")
+        await add_log("REMEDIATED", "Deployment aborted. Vault secured.")
         return
     else:
-        add_log("INFO", shield_msg)
+        await add_log("INFO", shield_msg)
 
-    # Step 2 - Dynamic Pre-Flight & Dependency Audit
-    add_log("INFO", f"Executing dynamic pre-flight tests in {active_dir}...")
+    await add_log("INFO", f"Executing dynamic pre-flight tests in {active_dir}...")
     try:
         passed, msg = run_dynamic_preflight(active_dir, target_file)
         if not passed:
             deployment_state["stage"] = f"Pre-flight Error: {msg}"
             deployment_state["status"] = "failed"
-            add_log("ANOMALY", f"Pre-flight failed on {target_file}: {msg}")
+            await add_log("ANOMALY", f"Pre-flight failed on {target_file}: {msg}")
             await asyncio.sleep(2)
             deployment_state["stage"] = "Deployment Rejected. Safe baseline preserved."
             deployment_state["status"] = "rolled_back"
-            add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
+            await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
             return
         else:
-            add_log("INFO", msg)
+            await add_log("INFO", msg)
     except Exception as e:
         deployment_state["stage"] = f"Test execution error: {str(e)}"
         deployment_state["status"] = "failed"
-        add_log("ANOMALY", f"Pipeline executor error: {str(e)}")
+        await add_log("ANOMALY", f"Pipeline executor error: {str(e)}")
         return
 
     deployment_state["stage"] = "Syntax & security audits passed. Packaging release..."
-    add_log("INFO", f"Code verified successfully for {target_file}.")
+    await add_log("INFO", f"Code verified successfully for {target_file}.")
     await asyncio.sleep(1.5)
 
     deployment_state["stage"] = "Deploying verified release to cloud cluster..."
-    add_log("INFO", f"Deploying to active Render cluster...")
+    await add_log("INFO", f"Deploying to active Render cluster...")
     await asyncio.sleep(1.5)
 
     deployment_state["stage"] = "Tests passed. Triggering full MERN stack deployment..."
-    add_log("INFO", f"Sending secure launch commands to Render Deploy Hooks...")
+    await add_log("INFO", f"Sending secure launch commands to Render Deploy Hooks...")
     
     try:
         urllib.request.urlopen(RENDER_FRONTEND_HOOK_URL, timeout=5)
         urllib.request.urlopen(RENDER_BACKEND_HOOK_URL, timeout=5)
-        add_log("INFO", "Render accepted commands. Frontend and Backend are building in the cloud.")
+        await add_log("INFO", "Render accepted commands. Frontend and Backend are building in the cloud.")
     except Exception as e:
         deployment_state["stage"] = "Failed to reach Render API."
         deployment_state["status"] = "failed"
-        add_log("ANOMALY", f"Render Deploy Hook failed: {str(e)}")
+        await add_log("ANOMALY", f"Render Deploy Hook failed: {str(e)}")
         return
 
     await asyncio.sleep(2)
     deployment_state["stage"] = "Full stack deployment executed successfully!"
     deployment_state["status"] = "success"
-    add_log("REMEDIATED", f"Release {commit_hash} authorized and sent to production.")
+    await add_log("REMEDIATED", f"Release {commit_hash} authorized and sent to production.")
 
 @app.get("/")
 def read_root():
-    return {"message": "Sentinel AIOps Engine is Live!"}
+    return {"message": "Sentinel AIOps Engine is Live with MongoDB Persistence!"}
 
 @app.post("/api/webhooks/github")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -307,7 +323,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
     await websocket.accept()
-    add_log("INFO", "Sentinel SmartOps observability core online")
+    await add_log("INFO", "Sentinel SmartOps observability core online")
     
     if "ecommerce" not in system_state:
         system_state["ecommerce"] = {"id": "ecommerce", "name": "E-Commerce Transaction Engine", "status": "failed", "latency": 0}
@@ -352,6 +368,6 @@ async def websocket_telemetry(websocket: WebSocket):
 
 @app.post("/api/heal/{service_id}")
 async def execute_auto_heal(service_id: str):
-    add_log("AUTO-HEAL", f"Manual remediation sequence started for {service_id}")
+    await add_log("AUTO-HEAL", f"Manual remediation sequence started for {service_id}")
     await autonomous_heal(service_id, service_id)
     return {"status": "success"}
