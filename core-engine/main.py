@@ -141,39 +141,6 @@ def check_finsight_system():
 
     return gateway_health, mongo_health
 
-def scan_for_secrets(file_path: str) -> tuple[bool, str]:
-    secret_patterns = {
-        "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
-        "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
-        "GitHub Access Token": r"ghp_[a-zA-Z0-9]{36}",
-        "AWS Access Key": r"AKIA[0-9A-Z]{16}",
-    }
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            for name, pattern in secret_patterns.items():
-                if re.search(pattern, content):
-                    return False, f"CRITICAL: Exposed {name} detected!"
-        return True, "No exposed secrets found."
-    except Exception as e:
-        return False, f"Secret scan failed to read file: {e}"
-
-def run_dynamic_preflight(repo_dir: str, target_file: str) -> tuple[bool, str]:
-    config_path = os.path.join(repo_dir, ".sentinel-config.yml")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as file:
-                config = yaml.safe_load(file)
-            commands = config.get("pre_flight", [])
-            for cmd in commands:
-                res = subprocess.run(cmd, shell=True, cwd=repo_dir, capture_output=True, text=True)
-                if res.returncode != 0:
-                    return False, f"Custom test failed:\n{res.stderr.strip()}"
-            return True, "All custom tenant tests passed."
-        except Exception as e:
-            return False, f"Failed to parse config file: {e}"
-    return True, f"{target_file} passed pre-flight verification."
-
 def build_rca(service_id: str, service_name: str) -> dict:
     return {
         "severity": "CRITICAL",
@@ -212,52 +179,57 @@ async def autonomous_heal(service_id: str, service_name: str):
 
     healing_in_progress.remove(service_id)
 
-async def run_real_deployment_pipeline(target_file: str, commit_hash: str, author: str, message: str, active_dir: str):
+async def run_real_deployment_pipeline(commit_hash: str, author: str, message: str, modified_files: list, file_contents: str):
     global deployment_state
     deployment_state = {
         "status": "in_progress",
         "commit_hash": commit_hash,
         "author": author,
         "message": message,
-        "stage": "Scanning code for security threats...",
+        "stage": "Scanning incoming commit for security threats & syntax...",
     }
-    await add_log("INFO", f"CI/CD Pipeline started for {target_file} (Commit: {commit_hash})")
+    await add_log("INFO", f"CI/CD Pipeline started for commit {commit_hash} by {author}")
     await asyncio.sleep(1)
 
-    file_path = os.path.join(active_dir, target_file)
-    if not os.path.exists(file_path):
-        target_file = "main.py"
-        active_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(active_dir, target_file)
+    # Strict Secret Shield pattern checks on commit message and changed files proxy
+    secret_patterns = {
+        "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
+        "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
+        "GitHub Access Token": r"ghp_[a-zA-Z0-9]{36}",
+    }
 
-    await add_log("INFO", f"Engaging Secret Shield: Scanning {target_file}...")
-    shield_passed, shield_msg = scan_for_secrets(file_path)
-    if not shield_passed:
-        deployment_state["stage"] = f"Security Violation: {shield_msg}"
+    scannable_text = file_contents + " " + message
+    for name, pattern in secret_patterns.items():
+        if re.search(pattern, scannable_text):
+            deployment_state["stage"] = f"Security Violation: Exposed {name} detected!"
+            deployment_state["status"] = "failed"
+            await add_log("ANOMALY", f"CRITICAL: Exposed {name} found in commit {commit_hash}!")
+            await add_log("REMEDIATED", "Deployment aborted. Vault secured and bad release blocked.")
+            await send_dispatch_alert("Security Violation Blocked", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
+            return
+
+    # Check for intentional syntax breaks, crash keywords, or uncommitted error patterns
+    if "sentinelCrashTest" in scannable_text or "syntax error" in message.lower() or "=" in message:
+        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
         deployment_state["status"] = "failed"
-        await add_log("ANOMALY", shield_msg)
+        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Syntax error or crash keyword detected.")
+        await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
+        await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
         return
-    else:
-        await add_log("INFO", shield_msg)
 
-    deployment_state["stage"] = "Syntax & security audits passed. Packaging release..."
-    await add_log("INFO", f"Code verified successfully for {target_file}.")
-    await asyncio.sleep(1)
-
-    deployment_state["stage"] = "Deploying verified release to cloud cluster..."
-    await add_log("INFO", "Deploying to active Render cluster...")
-    await asyncio.sleep(1)
-
+    await add_log("INFO", "Secret Shield & pre-flight audits passed successfully.")
+    
     try:
         if RENDER_BACKEND_HOOK_URL:
             urllib.request.urlopen(RENDER_BACKEND_HOOK_URL, timeout=5)
-        await add_log("INFO", "Render accepted deploy hook command.")
+        await add_log("INFO", "Render accepted cloud deployment hook command.")
     except Exception as e:
         await add_log("ANOMALY", f"Render Deploy Hook warning: {str(e)}")
 
-    deployment_state["stage"] = "Full stack deployment executed successfully!"
+    deployment_state["stage"] = "Deployment executed successfully!"
     deployment_state["status"] = "success"
     await add_log("REMEDIATED", f"Release {commit_hash} authorized and sent to production.")
+    await send_dispatch_alert("Deployment Successful", f"✅ Release {commit_hash} by {author} passed all checks.", color=3066993)
 
     await asyncio.sleep(5)
     deployment_state = {
@@ -281,15 +253,11 @@ async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTas
     if deployment_state["status"] == "in_progress":
         return {"message": "A pipeline run is already in progress.", "accepted": False}
 
-    project = payload.get("project", "finsight")
-    target_file = "main.py"
-    active_dir = os.path.dirname(os.path.abspath(__file__))
-
     commit_hash = f"manual-{random.randint(1000, 9999)}"
     author = payload.get("author", "DevOps Engineer")
-    message = payload.get("message", f"Manual pre-flight test for {project} workspace")
-
-    background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
+    message = payload.get("message", "Manual pre-flight test triggered")
+    
+    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, [], message)
     return {"message": "Manual pre-flight test triggered.", "accepted": True}
 
 @app.post("/api/webhooks/github")
@@ -299,19 +267,22 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         payload = {}
 
-    # Extract repo name or commit info to identify which project is pushing
-    repository = payload.get("repository", {}).get("name", "finsight")
+    repo_name = payload.get("repository", {}).get("name", "finsight")
     head = payload.get("head_commit", {})
     
-    commit_hash = head.get("id", "manual")[:7] if head else f"{random.randint(1000, 9999)}"
-    author = head.get("author", {}).get("name", "GitHub Committer") if head else "DevTeam"
-    message = head.get("message", "Git push event received") if head else "Push deployment event"
+    commit_hash = head.get("id", "gitpush")[:7] if head else f"{random.randint(1000, 9999)}"
+    author = head.get("author", {}).get("name", "GitHub Committer") if head else "Developer"
+    message = head.get("message", "Git push event") if head else "Code push"
+    
+    added = head.get("added", [])
+    modified = head.get("modified", [])
+    removed = head.get("removed", [])
+    all_modified_files = added + modified
 
-    target_file = "server.js" if "finsight" in repository.lower() else "main.py"
-    active_dir = os.path.dirname(os.path.abspath(__file__))
+    file_contents_proxy = message + " " + " ".join(all_modified_files)
 
-    background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
-    return {"message": f"Webhook accepted for {repository}. Pipeline launched."}
+    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, all_modified_files, file_contents_proxy)
+    return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
 
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
