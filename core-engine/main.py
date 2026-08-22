@@ -60,7 +60,6 @@ WORKSPACES = [
     },
 ]
 
-# 🔴 Stable default state so mock services stay healthy and stop spamming
 system_state = {
     "auth": {"id": "auth", "name": "Authentication Service", "status": "healthy", "latency": 58},
     "ecommerce": {"id": "ecommerce", "name": "E-Commerce Transaction Engine", "status": "healthy", "latency": 64},
@@ -292,6 +291,37 @@ async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTas
 
     background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
     return {"message": "Manual pre-flight test triggered.", "accepted": True}
+
+@app.post("/api/webhooks/github")
+async def github_webhook(request: Request, background_tasks: BackgroundTasks):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    if "head_commit" in payload and payload["head_commit"]:
+        head = payload["head_commit"]
+        commit_hash = head.get("id", "")[:7]
+        author = head.get("author", {}).get("name", "GitHub Committer")
+        message = head.get("message", "Git push event")
+
+        modified_files = head.get("modified", [])
+        target_file = "main.py"
+        for f in modified_files:
+            if f.endswith(".py") or f.endswith(".js"):
+                target_file = os.path.basename(f)
+                break
+        active_dir = os.path.dirname(os.path.abspath(__file__))
+    else:
+        commit_hash = payload.get("commit", f"{random.randint(1000000, 9999999)}")[:7]
+        author = payload.get("author", "DevTeam")
+        message = payload.get("message", "Manual pipeline test")
+        project = payload.get("project", "finsight")
+        target_file = payload.get("target_file", "main.py")
+        active_dir = os.path.dirname(os.path.abspath(__file__))
+
+    background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
+    return {"message": "Webhook accepted. Pipeline launched."}
 
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
