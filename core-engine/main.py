@@ -11,7 +11,7 @@ import asyncio
 import random
 import json
 import re
-from motor.motor_asyncio import AsyncIOMotorClient  # 🔴 NEW: Async MongoDB Driver
+from motor.motor_asyncio import AsyncIOMotorClient  # 🔴 Async MongoDB Driver
 
 app = FastAPI()
 
@@ -23,8 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔴 NEW: MongoDB Connection for Sentinel Audit Logs (Separate Database)
-# Replace with your Atlas URI or keep it ready for an environment variable
+# 🔴 MongoDB Connection for Sentinel Audit Logs
 MONGO_URI = os.getenv("SENTINEL_MONGO_URI", "mongodb+srv://hydrabolt:8eoqcZyYDfqOvKvb@cluster0.imzoavv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 db_client = AsyncIOMotorClient(MONGO_URI)
 sentinel_db = db_client["sentinel_ops"]
@@ -58,7 +57,7 @@ deployment_state = {
 
 healing_in_progress = set()
 
-# 🔴 Upgraded to save logs permanently to MongoDB Atlas
+# 🔴 Upgraded to save logs permanently to MongoDB Atlas & prevent ObjectId JSON crash
 async def add_log(level, msg):
     time_str = time.strftime("%H:%M:%S")
     log_entry = {"id": random.randint(10000, 99999), "level": level, "msg": msg, "time": time_str}
@@ -68,7 +67,8 @@ async def add_log(level, msg):
         live_logs.pop(0)
         
     try:
-        await logs_collection.insert_one(log_entry)
+        # Insert a clean copy so MongoDB generates _id without polluting our runtime dict
+        await logs_collection.insert_one(dict(log_entry))
     except Exception:
         pass
 
@@ -169,7 +169,7 @@ async def autonomous_heal(service_id: str, service_name: str):
     incident_doc = {"id": incident_id, "service": service_name, "status": "Active (Healing...)"}
     live_incidents.append(incident_doc)
     try:
-        await incidents_collection.insert_one(incident_doc)
+        await incidents_collection.insert_one(dict(incident_doc))
     except Exception:
         pass
     
