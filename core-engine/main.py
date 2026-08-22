@@ -191,7 +191,6 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
     await add_log("INFO", f"CI/CD Pipeline started for commit {commit_hash} by {author}")
     await asyncio.sleep(1)
 
-    # Strict Secret Shield pattern checks on commit message and changed files proxy
     secret_patterns = {
         "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
         "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
@@ -208,7 +207,6 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
             await send_dispatch_alert("Security Violation Blocked", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    # Check for intentional syntax breaks, crash keywords, or uncommitted error patterns
     if "sentinelCrashTest" in scannable_text or "syntax error" in message.lower() or "=" in message:
         deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
         deployment_state["status"] = "failed"
@@ -279,7 +277,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     removed = head.get("removed", [])
     all_modified_files = added + modified
 
-    file_contents_proxy = message + " " + " ".join(all_modified_files)
+    file_contents_proxy = message + " " + " ".join(all_modified_files) + " " + " ".join(head.get("distinct", []))
 
     background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, all_modified_files, file_contents_proxy)
     return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
