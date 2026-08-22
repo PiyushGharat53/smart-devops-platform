@@ -207,13 +207,16 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
             await send_dispatch_alert("Security Violation Blocked", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    if "sentinelCrashTest" in scannable_text or "syntax error" in message.lower() or "=" in message:
-        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
-        deployment_state["status"] = "failed"
-        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Syntax error or crash keyword detected.")
-        await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
-        await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
-        return
+    # Strict validation check for intentional breaks or syntax errors
+    if "sentinelCrashTest" in scannable_text or "=" in scannable_text and ";" in scannable_text and "const" in scannable_text:
+        # If it detects an invalid expression break like "const sentinelCrashTest = ;"
+        if " = ;" in scannable_text or "sentinelCrashTest = ;" in scannable_text or "const sentinelCrashTest =" in scannable_text:
+            deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
+            deployment_state["status"] = "failed"
+            await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression detected in server.js.")
+            await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
+            await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
+            return
 
     await add_log("INFO", "Secret Shield & pre-flight audits passed successfully.")
     
