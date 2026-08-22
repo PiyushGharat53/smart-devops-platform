@@ -1,8 +1,0 @@
-# prometheus.yml
-global:
-  scrape_interval: 5s
-
-scrape_configs:
-  - job_name: "web"
-    static_configs:
-      - targets: ["web:8000"]
