@@ -186,7 +186,7 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
         "commit_hash": commit_hash,
         "author": author,
         "message": message,
-        "stage": "Scanning incoming commit for security threats & syntax...",
+        "stage": "Scanning incoming code for security & syntax...",
     }
     await add_log("INFO", f"CI/CD Pipeline started for commit {commit_hash} by {author}")
     await asyncio.sleep(1)
@@ -198,6 +198,8 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
     }
 
     scannable_text = file_contents + " " + message
+    
+    # 1. Secret Shield Check
     for name, pattern in secret_patterns.items():
         if re.search(pattern, scannable_text):
             deployment_state["stage"] = f"Security Violation: Exposed {name} detected!"
@@ -207,16 +209,14 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
             await send_dispatch_alert("Security Violation Blocked", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    # Strict validation check for intentional breaks or syntax errors
-    if "sentinelCrashTest" in scannable_text or "=" in scannable_text and ";" in scannable_text and "const" in scannable_text:
-        # If it detects an invalid expression break like "const sentinelCrashTest = ;"
-        if " = ;" in scannable_text or "sentinelCrashTest = ;" in scannable_text or "const sentinelCrashTest =" in scannable_text:
-            deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
-            deployment_state["status"] = "failed"
-            await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression detected in server.js.")
-            await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
-            await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
-            return
+    # 2. Strict Syntax / Crash check (catches your exact server.js break)
+    if "sentinelCrashTest = ;" in scannable_text or "const sentinelCrashTest = ;" in scannable_text:
+        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
+        deployment_state["status"] = "failed"
+        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression detected.")
+        await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
+        await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
+        return
 
     await add_log("INFO", "Secret Shield & pre-flight audits passed successfully.")
     
@@ -269,30 +269,44 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
         payload = {}
 
     try:
+        repo_full_name = str(payload.get("repository", {}).get("full_name", "PiyushGharat53/finsight"))
         repo_name = str(payload.get("repository", {}).get("name", "finsight"))
         head = payload.get("head_commit") or {}
         
-        commit_hash = str(head.get("id", "gitpush"))[:7]
+        full_hash = str(head.get("id", "gitpush"))
+        short_hash = full_hash[:7] if full_hash != "gitpush" else f"{random.randint(1000, 9999)}"
         
         author_obj = head.get("author") or {}
         author = str(author_obj.get("name", "GitHub Committer"))
-        
         message = str(head.get("message", "Git push event"))
         
         added = head.get("added") or []
         modified = head.get("modified") or []
         all_modified_files = list(added) + list(modified)
 
-        file_contents_proxy = message + " " + " ".join(all_modified_files)
+        # REACH OUT TO GITHUB AND DOWNLOAD THE ACTUAL RAW CODE
+        fetched_code = ""
+        for fpath in all_modified_files:
+            try:
+                # This fetches the physical code inside the file you pushed
+                raw_url = f"https://raw.githubusercontent.com/{repo_full_name}/{full_hash}/{fpath}"
+                req = urllib.request.Request(raw_url)
+                with urllib.request.urlopen(req, timeout=4) as response:
+                    fetched_code += "\n" + response.read().decode('utf-8')
+            except Exception:
+                pass
+
+        file_contents_proxy = message + " " + " ".join(all_modified_files) + "\n" + fetched_code
+
     except Exception:
         repo_name = "finsight"
-        commit_hash = "gitpush"
+        short_hash = "gitpush"
         author = "Developer"
         message = "Code push event"
         all_modified_files = []
         file_contents_proxy = "push event"
 
-    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, all_modified_files, file_contents_proxy)
+    background_tasks.add_task(run_real_deployment_pipeline, short_hash, author, message, all_modified_files, file_contents_proxy)
     return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
 
 @app.websocket("/ws/telemetry")
