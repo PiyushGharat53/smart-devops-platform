@@ -35,6 +35,7 @@ RENDER_FRONTEND_HOOK_URL = "https://api.render.com/deploy/srv-d6vu48s50q8c739s72
 RENDER_BACKEND_HOOK_URL = "https://api.render.com/deploy/srv-d6vtlvngi27c73f7cvhg?key=3TKxC58bqXU"
 CHATBOT_API_URL = "http://localhost:8001/health"
 ECOMMERCE_API_URL = "http://localhost:8002/health"
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "") # 🔴 Real-Time Dispatch Webhook
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOCK_SERVICES_DIR = os.path.join(BASE_DIR, "sentinel-mock-services")
@@ -57,6 +58,28 @@ deployment_state = {
 
 healing_in_progress = set()
 
+# 🔴 Real-Time Dispatch Alert Function
+async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
+    if not DISCORD_WEBHOOK_URL:
+        return
+    payload = {
+        "embeds": [{
+            "title": f"🛡️ Sentinel AIOps Dispatch: {title}",
+            "description": description,
+            "color": color,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        }]
+    }
+    try:
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json', 'User-Agent': 'Sentinel-AIOps'}
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+
 # 🔴 Upgraded to save logs permanently to MongoDB Atlas & prevent ObjectId JSON crash
 async def add_log(level, msg):
     time_str = time.strftime("%H:%M:%S")
@@ -67,7 +90,6 @@ async def add_log(level, msg):
         live_logs.pop(0)
         
     try:
-        # Insert a clean copy so MongoDB generates _id without polluting our runtime dict
         await logs_collection.insert_one(dict(log_entry))
     except Exception:
         pass
@@ -166,6 +188,9 @@ async def autonomous_heal(service_id: str, service_name: str):
     incident_id = f"INC-{random.randint(1000, 9999)}"
     await add_log("ANOMALY", f"[{incident_id}] {service_name} is DOWN. Initiating Auto-Heal...")
     
+    # 🔴 Trigger Dispatch Alert for Incident Start (Red Embed)
+    await send_dispatch_alert(f"Incident {incident_id}", f"🚨 **{service_name}** is DOWN. Initiating autonomous remediation sequence.", color=15158332)
+    
     incident_doc = {"id": incident_id, "service": service_name, "status": "Active (Healing...)"}
     live_incidents.append(incident_doc)
     try:
@@ -196,6 +221,9 @@ async def autonomous_heal(service_id: str, service_name: str):
             system_state[service_id]["latency"] = random.randint(35, 90)
     
     await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restoration cycle complete.")
+    
+    # 🔴 Trigger Dispatch Alert for Resolution (Green Embed)
+    await send_dispatch_alert(f"Resolved {incident_id}", f"✅ **{service_name}** restoration cycle complete. System back to 100% health.", color=3066993)
     
     for inc in live_incidents:
         if inc["id"] == incident_id:
@@ -287,7 +315,7 @@ async def run_real_deployment_pipeline(target_file: str, commit_hash: str, autho
 
 @app.get("/")
 def read_root():
-    return {"message": "Sentinel AIOps Engine is Live with MongoDB Persistence!"}
+    return {"message": "Sentinel AIOps Engine is Live with MongoDB Persistence & Real-Time Dispatch!"}
 
 @app.post("/api/webhooks/github")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
