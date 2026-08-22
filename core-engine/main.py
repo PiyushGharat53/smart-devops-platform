@@ -265,19 +265,29 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         payload = {}
 
-    repo_name = payload.get("repository", {}).get("name", "finsight")
-    head = payload.get("head_commit", {})
-    
-    commit_hash = head.get("id", "gitpush")[:7] if head else f"{random.randint(1000, 9999)}"
-    author = head.get("author", {}).get("name", "GitHub Committer") if head else "Developer"
-    message = head.get("message", "Git push event") if head else "Code push"
-    
-    added = head.get("added", [])
-    modified = head.get("modified", [])
-    removed = head.get("removed", [])
-    all_modified_files = added + modified
+    try:
+        repo_name = str(payload.get("repository", {}).get("name", "finsight"))
+        head = payload.get("head_commit") or {}
+        
+        commit_hash = str(head.get("id", "gitpush"))[:7]
+        
+        author_obj = head.get("author") or {}
+        author = str(author_obj.get("name", "GitHub Committer"))
+        
+        message = str(head.get("message", "Git push event"))
+        
+        added = head.get("added") or []
+        modified = head.get("modified") or []
+        all_modified_files = list(added) + list(modified)
 
-    file_contents_proxy = message + " " + " ".join(all_modified_files) + " " + " ".join(head.get("distinct", []))
+        file_contents_proxy = message + " " + " ".join(all_modified_files)
+    except Exception:
+        repo_name = "finsight"
+        commit_hash = "gitpush"
+        author = "Developer"
+        message = "Code push event"
+        all_modified_files = []
+        file_contents_proxy = "push event"
 
     background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, all_modified_files, file_contents_proxy)
     return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
