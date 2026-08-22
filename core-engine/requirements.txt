@@ -1,6 +1,6 @@
 # requirements.txt
 fastapi
-uvicorn
+uvicorn[standard]
 prometheus-fastapi-instrumentator
 requests
 scikit-learn
@@ -8,3 +8,4 @@ numpy
 psutil
 PyYAML
 motor
+websockets
