@@ -132,7 +132,7 @@ export default function App() {
 
   // COMBO UPGRADE 1: THE WEBSOCKET CONNECTION
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/ws/telemetry");
+    const ws = new WebSocket("wss://sentinel-aiops-engine.onrender.com/ws/telemetry");
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
