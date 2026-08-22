@@ -299,29 +299,19 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         payload = {}
 
-    if "head_commit" in payload and payload["head_commit"]:
-        head = payload["head_commit"]
-        commit_hash = head.get("id", "")[:7]
-        author = head.get("author", {}).get("name", "GitHub Committer")
-        message = head.get("message", "Git push event")
+    # Extract repo name or commit info to identify which project is pushing
+    repository = payload.get("repository", {}).get("name", "finsight")
+    head = payload.get("head_commit", {})
+    
+    commit_hash = head.get("id", "manual")[:7] if head else f"{random.randint(1000, 9999)}"
+    author = head.get("author", {}).get("name", "GitHub Committer") if head else "DevTeam"
+    message = head.get("message", "Git push event received") if head else "Push deployment event"
 
-        modified_files = head.get("modified", [])
-        target_file = "main.py"
-        for f in modified_files:
-            if f.endswith(".py") or f.endswith(".js"):
-                target_file = os.path.basename(f)
-                break
-        active_dir = os.path.dirname(os.path.abspath(__file__))
-    else:
-        commit_hash = payload.get("commit", f"{random.randint(1000000, 9999999)}")[:7]
-        author = payload.get("author", "DevTeam")
-        message = payload.get("message", "Manual pipeline test")
-        project = payload.get("project", "finsight")
-        target_file = payload.get("target_file", "main.py")
-        active_dir = os.path.dirname(os.path.abspath(__file__))
+    target_file = "server.js" if "finsight" in repository.lower() else "main.py"
+    active_dir = os.path.dirname(os.path.abspath(__file__))
 
     background_tasks.add_task(run_real_deployment_pipeline, target_file, commit_hash, author, message, active_dir)
-    return {"message": "Webhook accepted. Pipeline launched."}
+    return {"message": f"Webhook accepted for {repository}. Pipeline launched."}
 
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
