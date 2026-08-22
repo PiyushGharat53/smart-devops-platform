@@ -159,7 +159,7 @@ export default function App() {
     // Optimistic UI change so it spins immediately
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: "healing" } : s)));
     try {
-      await axios.post(`http://localhost:8000/api/heal/${id}`);
+      await axios.post(`https://sentinel-aiops-engine.onrender.com/api/heal/${id}`);
       // The WebSocket will naturally broadcast the fixed state back to us!
     } catch (error) {
       console.error("Heal failed", error);
