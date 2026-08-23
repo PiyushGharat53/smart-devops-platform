@@ -18,9 +18,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # ==========================================
 MONGO_URI = os.getenv("SENTINEL_MONGO_URI", "")
 FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
-RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
-FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "") # For Sentinel/Core
+FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "") # For FinSight
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "") # Needed if FinSight is a private repo
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # MongoDB Setup
@@ -60,17 +60,12 @@ app.add_middleware(
 # ==========================================
 # In-Memory State & Constants
 # ==========================================
+# Cleaned up workspaces to only focus on FinSight
 WORKSPACES = [
     {"id": "finsight", "label": "FinSight Financial Engine", "env": "Production", "service_ids": ["gateway", "mongo"]},
-    {"id": "chatbot", "label": "Campus Multilingual Chatbot", "env": "Staging", "service_ids": ["chatbot"]},
-    {"id": "core", "label": "Core Microservices Cluster", "env": "All Services", "service_ids": None},
 ]
 
-system_state: Dict[str, Dict[str, Any]] = {
-    "auth": {"id": "auth", "name": "Authentication Service", "status": "healthy", "latency": 58},
-    "ecommerce": {"id": "ecommerce", "name": "E-Commerce Transaction Engine", "status": "healthy", "latency": 64},
-    "chatbot": {"id": "chatbot", "name": "Campus Multilingual Chatbot", "status": "healthy", "latency": 72},
-}
+system_state: Dict[str, Dict[str, Any]] = {}
 
 live_logs: List[Dict[str, Any]] = []
 live_incidents: List[Dict[str, Any]] = []
@@ -203,7 +198,7 @@ async def run_real_deployment_pipeline(
         "stage": f"Scanning incoming code for {repo_name}...",
     }
     await add_log("INFO", f"CI/CD Pipeline started for {repo_name} (Commit: {commit_hash})")
-    await asyncio.sleep(1)
+    await asyncio.sleep(2) # Simulated heavy parsing delay
 
     # 1. Verification of Code Retrieval
     if "[SENTINEL_ERROR_FETCHING_CODE]" in file_contents:
@@ -222,16 +217,39 @@ async def run_real_deployment_pipeline(
     scannable_text = f"{file_contents} {message}"
     for name, pattern in secret_patterns.items():
         if re.search(pattern, scannable_text):
-            deployment_state["stage"] = f"Security Violation: Exposed {name} detected!"
+            error_msg = f"Security Violation: Exposed {name} detected!"
+            deployment_state["stage"] = error_msg
             deployment_state["status"] = "failed"
+            
+            # Log to Incident Feed
+            incident_id = f"INC-{random.randint(1000, 9999)}"
+            live_incidents.append({
+                "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
+                "title": "Critical Vault Exposure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
+                "severity": "CRITICAL", "confidence": 100, "rootCause": error_msg, "remediation": "Release aborted. Vault secured."
+            })
+            
             await add_log("ANOMALY", f"CRITICAL: Exposed {name} detected in commit {commit_hash}!")
             await send_dispatch_alert("Security Block", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
     # 3. Syntax Verification Audit
-    if "sentinelCrashTest = ;" in scannable_text or "const sentinelCrashTest = ;" in scannable_text:
-        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
+    await asyncio.sleep(1) # Simulated compilation delay
+    syntax_break_pattern = r"(?:const|let|var)\s+\w+\s*=\s*;"
+    
+    if re.search(syntax_break_pattern, scannable_text) or "sentinelCrashTest" in scannable_text:
+        error_msg = "Pre-flight Error: Invalid syntax expression."
+        deployment_state["stage"] = error_msg
         deployment_state["status"] = "failed"
+        
+        # Log to Incident Feed
+        incident_id = f"INC-{random.randint(1000, 9999)}"
+        live_incidents.append({
+            "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
+            "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
+            "severity": "HIGH", "confidence": 98, "rootCause": error_msg, "remediation": "Auto-rollback complete. Bad code blocked."
+        })
+        
         await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression.")
         await send_dispatch_alert("Pre-Flight Block", f"🚨 Blocked push from {author} due to syntax failure.", color=15158332)
         return
@@ -362,6 +380,8 @@ async def websocket_telemetry(websocket: WebSocket):
     try:
         while True:
             finsight_gateway, finsight_mongo = await check_finsight_system()
+            
+            # Removed mock services from this array
             payload = {
                 "metrics": {
                     "cpu_usage": psutil.cpu_percent(interval=None),
@@ -371,10 +391,7 @@ async def websocket_telemetry(websocket: WebSocket):
                 },
                 "services": [
                     finsight_gateway,
-                    system_state["auth"],
-                    system_state["ecommerce"],
-                    finsight_mongo,
-                    system_state["chatbot"]
+                    finsight_mongo
                 ],
                 "logs": live_logs,
                 "incidents": live_incidents,
