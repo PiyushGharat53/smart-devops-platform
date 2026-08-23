@@ -80,8 +80,11 @@ deployment_state: Dict[str, Any] = {
 # Helper Utilities
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
+    """Dispatches asynchronous alerts to Discord with error tracking."""
     if not DISCORD_WEBHOOK_URL:
+        await add_log("ANOMALY", "Discord alert skipped: DISCORD_WEBHOOK_URL is missing.")
         return
+        
     payload = {
         "embeds": [{
             "title": f"🛡️ Sentinel AIOps: {title}",
@@ -90,11 +93,21 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
         }]
     }
+    
+    # Discord requires a User-Agent or it will silently block the request (403 Forbidden)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Sentinel-AIOps/1.0"
+    }
+    
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            await client.post(DISCORD_WEBHOOK_URL, json=payload)
-    except Exception:
-        pass
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
+            # If Discord rejects it, log the exact reason to the dashboard so we aren't flying blind
+            if response.status_code not in (200, 204):
+                await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {response.text}")
+    except Exception as e:
+        await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
 
 async def add_log(level: str, msg: str):
     time_str = time.strftime("%H:%M:%S")
