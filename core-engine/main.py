@@ -139,11 +139,19 @@ async def check_finsight_system():
     return gateway_health, mongo_health
 
 async def autonomous_heal(service_id: str, service_name: str):
+    """Executes automated remediation flow for impacted services."""
     if service_id in healing_in_progress:
         return
     healing_in_progress.add(service_id)
     incident_id = f"INC-{random.randint(1000, 9999)}"
     await add_log("ANOMALY", f"[{incident_id}] {service_name} anomaly detected. Auto-Heal active...")
+    
+    # ---> RESTORED: Discord Alert for Active Incident <---
+    await send_dispatch_alert(
+        f"Incident {incident_id} Active", 
+        f"🚨 **{service_name}** requires attention. Remediation underway.", 
+        color=15158332
+    )
 
     rca = {
         "severity": "CRITICAL",
@@ -163,14 +171,25 @@ async def autonomous_heal(service_id: str, service_name: str):
     live_incidents.append(incident_doc)
 
     await asyncio.sleep(2)
+    
+    # Restore the health status (Simulated Fix)
     if service_id in system_state:
         system_state[service_id]["status"] = "healthy"
         system_state[service_id]["latency"] = random.randint(35, 80)
 
     await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restored to 100% health.")
+    
+    # ---> RESTORED: Discord Alert for Resolved Incident <---
+    await send_dispatch_alert(
+        f"Resolved {incident_id}", 
+        f"✅ **{service_name}** successfully stabilized.", 
+        color=3066993
+    )
+
     for inc in live_incidents:
         if inc["id"] == incident_id:
             inc["status"] = "Resolved"
+            
     healing_in_progress.remove(service_id)
 
 async def run_real_deployment_pipeline(
