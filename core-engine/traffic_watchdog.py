@@ -21,7 +21,7 @@ class TrafficWatchdog:
         self.defense_mode_active = False
         self.current_incident_id = None
         
-        self.spike_threshold = 45.0
+        self.spike_threshold = 15.0
         self.previous_request_count = None
         self.last_check_time = None
 
