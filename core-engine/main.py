@@ -191,28 +191,43 @@ async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTas
 
 @app.post("/api/webhooks/github")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
-    try: payload = await request.json()
-    except Exception: payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    repo_name = str(payload.get("repository", {}).get("name", "finsight"))
+    
+    # --- THE FIX: IGNORE SELF-MONITORING ---
+    if "smart-devops-platform" in repo_name.lower() or "sentinel" in repo_name.lower():
+        # Drop the event silently. Render will still auto-deploy the engine updates, 
+        # but the dashboard won't log or scan it.
+        return {"message": "Self-update ignored. Sentinel observes others, not itself."}
 
     try:
         repo_full_name = str(payload.get("repository", {}).get("full_name", "PiyushGharat53/finsight"))
-        repo_name = str(payload.get("repository", {}).get("name", "finsight"))
         head = payload.get("head_commit") or {}
         
         full_hash = str(head.get("id", "gitpush"))
         short_hash = full_hash[:7] if full_hash != "gitpush" else f"{random.randint(1000, 9999)}"
-        author = str((head.get("author") or {}).get("name", "GitHub Committer"))
+        
+        author_obj = head.get("author") or {}
+        author = str(author_obj.get("name", "GitHub Committer"))
         message = str(head.get("message", "Git push event"))
         
-        all_modified_files = list(head.get("added") or []) + list(head.get("modified") or [])
+        added = head.get("added") or []
+        modified = head.get("modified") or []
+        all_modified_files = list(added) + list(modified)
 
+        # REACH OUT TO GITHUB AND DOWNLOAD THE ACTUAL RAW CODE
         fetched_code = ""
         fetch_failed = False
         for fpath in all_modified_files:
             try:
                 raw_url = f"https://raw.githubusercontent.com/{repo_full_name}/{full_hash}/{fpath}"
                 req = urllib.request.Request(raw_url)
-                if GITHUB_TOKEN: req.add_header("Authorization", f"token {GITHUB_TOKEN}")
+                if GITHUB_TOKEN: 
+                    req.add_header("Authorization", f"token {GITHUB_TOKEN}")
                 with urllib.request.urlopen(req, timeout=4) as response:
                     fetched_code += "\n" + response.read().decode('utf-8')
             except Exception:
@@ -224,10 +239,16 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
         file_contents_proxy = message + " " + " ".join(all_modified_files) + "\n" + fetched_code
 
     except Exception:
-        repo_name, short_hash, author, message, all_modified_files, file_contents_proxy = "finsight", "gitpush", "Developer", "Code push event", [], "push event"
+        repo_name = "finsight"
+        short_hash = "gitpush"
+        author = "Developer"
+        message = "Code push event"
+        all_modified_files = []
+        file_contents_proxy = "push event"
 
+    # Only launch the pipeline for external services like FinSight
     background_tasks.add_task(run_real_deployment_pipeline, repo_name, short_hash, author, message, all_modified_files, file_contents_proxy)
-    return {"message": f"Webhook accepted for {repo_name}."}
+    return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
 
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
