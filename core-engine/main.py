@@ -18,9 +18,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # ==========================================
 MONGO_URI = os.getenv("SENTINEL_MONGO_URI", "")
 FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
-RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "") # For Sentinel/Core
-FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "") # For FinSight
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "") # Needed if FinSight is a private repo
+RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
+FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # MongoDB Setup
@@ -40,10 +40,8 @@ if MONGO_URI:
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    psutil.cpu_percent(interval=None)  # Prime cpu_percent measurement
+    psutil.cpu_percent(interval=None) 
     yield
-    # Shutdown
     if db_client:
         db_client.close()
 
@@ -60,7 +58,6 @@ app.add_middleware(
 # ==========================================
 # In-Memory State & Constants
 # ==========================================
-# Cleaned up workspaces to only focus on FinSight
 WORKSPACES = [
     {"id": "finsight", "label": "FinSight Financial Engine", "env": "Production", "service_ids": ["gateway", "mongo"]},
 ]
@@ -83,7 +80,6 @@ deployment_state: Dict[str, Any] = {
 # Helper Utilities
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
-    """Dispatches asynchronous alerts to Discord."""
     if not DISCORD_WEBHOOK_URL:
         return
     payload = {
@@ -101,7 +97,6 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
         pass
 
 async def add_log(level: str, msg: str):
-    """Appends to the circular in-memory log buffer and syncs to MongoDB."""
     time_str = time.strftime("%H:%M:%S")
     log_entry = {
         "id": random.randint(10000, 99999),
@@ -120,7 +115,6 @@ async def add_log(level: str, msg: str):
             pass
 
 async def check_finsight_system():
-    """Performs non-blocking async health checks against the FinSight API."""
     gateway_health = {"id": "gateway", "name": "FinSight API Gateway", "status": "healthy", "latency": 45}
     mongo_health = {"id": "mongo", "name": "Primary MongoDB Cluster", "status": "healthy", "latency": 48}
 
@@ -145,7 +139,6 @@ async def check_finsight_system():
     return gateway_health, mongo_health
 
 async def autonomous_heal(service_id: str, service_name: str):
-    """Executes automated remediation flow for impacted services."""
     if service_id in healing_in_progress:
         return
     healing_in_progress.add(service_id)
@@ -188,7 +181,6 @@ async def run_real_deployment_pipeline(
     modified_files: list,
     file_contents: str
 ):
-    """Runs pre-flight security scans and dispatches deployment triggers."""
     global deployment_state
     deployment_state = {
         "status": "in_progress",
@@ -198,9 +190,8 @@ async def run_real_deployment_pipeline(
         "stage": f"Scanning incoming code for {repo_name}...",
     }
     await add_log("INFO", f"CI/CD Pipeline started for {repo_name} (Commit: {commit_hash})")
-    await asyncio.sleep(2) # Simulated heavy parsing delay
+    await asyncio.sleep(2) 
 
-    # 1. Verification of Code Retrieval
     if "[SENTINEL_ERROR_FETCHING_CODE]" in file_contents:
         deployment_state["stage"] = "Pre-flight Error: Cannot read private code."
         deployment_state["status"] = "failed"
@@ -208,11 +199,14 @@ async def run_real_deployment_pipeline(
         await send_dispatch_alert("Pipeline Blocked", "🚨 Could not fetch code for verification.", color=15158332)
         return
 
-    # 2. Secret Shield Regex Audit
+    # STEP 2: EXPANDED SECRET SHIELD
     secret_patterns = {
         "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
-        "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
+        "Stripe/OpenAI Secret Key": r"sk-(?:live|test)-[a-zA-Z0-9]{20,}",
         "GitHub Access Token": r"ghp_[a-zA-Z0-9]{36}",
+        "AWS Access Key": r"AKIA[0-9A-Z]{16}",
+        "RSA Private Key": r"-----BEGIN (?:RSA )?PRIVATE KEY-----",
+        "JWT Token": r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+"
     }
     scannable_text = f"{file_contents} {message}"
     for name, pattern in secret_patterns.items():
@@ -221,42 +215,44 @@ async def run_real_deployment_pipeline(
             deployment_state["stage"] = error_msg
             deployment_state["status"] = "failed"
             
-            # Log to Incident Feed
             incident_id = f"INC-{random.randint(1000, 9999)}"
             live_incidents.append({
                 "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
                 "title": "Critical Vault Exposure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
-                "severity": "CRITICAL", "confidence": 100, "rootCause": error_msg, "remediation": "Release aborted. Vault secured."
+                "severity": "CRITICAL", "confidence": 100, "rootCause": error_msg, "remediation": "Release aborted. Please remove secret and push a clean commit."
             })
             
             await add_log("ANOMALY", f"CRITICAL: Exposed {name} detected in commit {commit_hash}!")
             await send_dispatch_alert("Security Block", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    # 3. Syntax Verification Audit
-    await asyncio.sleep(1) # Simulated compilation delay
-    syntax_break_pattern = r"(?:const|let|var)\s+\w+\s*=\s*;"
+    # STEP 2: EXPANDED SYNTAX VERIFICATION
+    await asyncio.sleep(1) 
+    syntax_fails = [
+        r"(?:const|let|var)\s+\w+\s*=\s*;", # Unassigned variables
+        r"eval\s*\(",                        # Dangerous eval usage
+        r"sentinelCrashTest"                # Manual trigger
+    ]
     
-    if re.search(syntax_break_pattern, scannable_text) or "sentinelCrashTest" in scannable_text:
-        error_msg = "Pre-flight Error: Invalid syntax expression."
-        deployment_state["stage"] = error_msg
-        deployment_state["status"] = "failed"
-        
-        # Log to Incident Feed
-        incident_id = f"INC-{random.randint(1000, 9999)}"
-        live_incidents.append({
-            "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
-            "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
-            "severity": "HIGH", "confidence": 98, "rootCause": error_msg, "remediation": "Auto-rollback complete. Bad code blocked."
-        })
-        
-        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression.")
-        await send_dispatch_alert("Pre-Flight Block", f"🚨 Blocked push from {author} due to syntax failure.", color=15158332)
-        return
+    for fail_pattern in syntax_fails:
+        if re.search(fail_pattern, scannable_text):
+            error_msg = "Pre-flight Error: Invalid or dangerous syntax expression."
+            deployment_state["stage"] = error_msg
+            deployment_state["status"] = "failed"
+            
+            incident_id = f"INC-{random.randint(1000, 9999)}"
+            live_incidents.append({
+                "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
+                "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
+                "severity": "HIGH", "confidence": 98, "rootCause": error_msg, "remediation": "Auto-rollback complete. Fix syntax locally and deploy again."
+            })
+            
+            await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression.")
+            await send_dispatch_alert("Pre-Flight Block", f"🚨 Blocked push from {author} due to syntax failure.", color=15158332)
+            return
 
     await add_log("INFO", "Secret Shield & pre-flight audits passed successfully.")
 
-    # 4. Deploy Hook Trigger
     hook_url = FINSIGHT_DEPLOY_HOOK_URL if "finsight" in repo_name.lower() else RENDER_BACKEND_HOOK_URL
     try:
         if hook_url:
@@ -314,7 +310,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     repo_data = payload.get("repository") or {}
     repo_name = str(repo_data.get("name", "finsight"))
 
-    # Ignore self-monitoring loops
     if "smart-devops-platform" in repo_name.lower() or "sentinel" in repo_name.lower():
         return {"message": "Self-update ignored. Sentinel observes external services."}
 
@@ -333,7 +328,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
         modified = head.get("modified") or []
         all_modified_files = list(added) + list(modified)
 
-        # Download raw code asynchronously
         fetched_code = ""
         fetch_failed = False
         headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
@@ -381,7 +375,6 @@ async def websocket_telemetry(websocket: WebSocket):
         while True:
             finsight_gateway, finsight_mongo = await check_finsight_system()
             
-            # Removed mock services from this array
             payload = {
                 "metrics": {
                     "cpu_usage": psutil.cpu_percent(interval=None),
@@ -402,7 +395,18 @@ async def websocket_telemetry(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
 
+# STEP 1: CONTEXT-AWARE HEALING ENDPOINT
 @app.post("/api/heal/{service_id}")
 async def execute_auto_heal(service_id: str):
+    if service_id == "pipeline":
+        # Acknowledge and Dismiss CI/CD Alerts instead of attempting to "Heal" a container
+        await add_log("INFO", "CI/CD Pipeline incident acknowledged and dismissed by engineer.")
+        for inc in live_incidents:
+            if inc.get("service_id") == "pipeline" and inc.get("status") != "Resolved":
+                inc["status"] = "Resolved"
+                inc["remediation"] = "Alert dismissed. Awaiting developer fix."
+        return {"status": "dismissed"}
+        
+    # Standard runtime auto-healing for actual live services
     await autonomous_heal(service_id, service_id)
     return {"status": "success"}
