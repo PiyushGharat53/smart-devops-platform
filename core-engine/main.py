@@ -1,5 +1,6 @@
 import os
 import time
+import base64
 import urllib.request
 import urllib.error
 import asyncio
@@ -27,33 +28,31 @@ FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender
 RENDER_FRONTEND_HOOK_URL = os.getenv("RENDER_FRONTEND_HOOK_URL", "")
 RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+# Needed to read real file content from a PRIVATE GitHub repo via the API.
+# A public repo works without this, but for a private one, requests without
+# a token get a 404 (not a 403 — GitHub hides private repos from unauthed
+# callers), which silently falls back to metadata-only scanning below.
+# Create a fine-grained PAT with read-only "Contents" access to just the
+# FinSight repo, and set it as GITHUB_TOKEN in Render's environment tab.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 db_client = AsyncIOMotorClient(MONGO_URI) if MONGO_URI else None
 sentinel_db = db_client["sentinel_ops"] if db_client else None
 logs_collection = sentinel_db["system_logs"] if sentinel_db is not None else None
 incidents_collection = sentinel_db["incidents"] if sentinel_db is not None else None
 
+# Single workspace for now — the multi-project switcher is still here
+# structurally (the frontend already reads this dynamically), but there's
+# no point advertising workspaces for services that aren't actually live.
+# Add entries back once the chatbot/e-commerce mocks have a real deployed
+# URL to poll instead of being simulated.
 WORKSPACES = [
-    {"id": "finsight", "label": "FinSight Financial Engine", "env": "Production", "service_ids": ["gateway", "mongo"]},
-    {"id": "chatbot", "label": "Campus Multilingual Chatbot", "env": "Staging", "service_ids": ["chatbot"]},
-    {"id": "core", "label": "Core Microservices Cluster", "env": "All Services", "service_ids": None},
+    {"id": "finsight", "label": "FinSight Financial Engine", "env": "Production", "service_ids": None},
 ]
 
-# Services that don't have a real backend to poll (yet) get controlled,
-# probabilistic fault injection instead — same idea as Netflix's Chaos
-# Monkey, scoped down for a classroom demo. This is what actually makes
-# the self-healing loop fire on its own during a live demo, rather than
-# depending on a real outage happening to occur while you're presenting.
-# It's a legitimate, explainable design choice — say so in your report.
-SIMULATED_SERVICES = {
-    "auth": {"id": "auth", "name": "Authentication Service", "fail_chance": 0.05, "base_latency": (40, 70)},
-    "ecommerce": {"id": "ecommerce", "name": "E-Commerce Transaction Engine", "fail_chance": 0.08, "base_latency": (50, 90)},
-    "chatbot": {"id": "chatbot", "name": "Campus Multilingual Chatbot", "fail_chance": 0.06, "base_latency": (45, 85)},
-}
-
-system_state = {
-    sid: {"id": sid, "name": cfg["name"], "status": "healthy", "latency": random.randint(*cfg["base_latency"])}
-    for sid, cfg in SIMULATED_SERVICES.items()
+SERVICE_DISPLAY_NAMES = {
+    "gateway": "FinSight API Gateway",
+    "mongo": "Primary MongoDB Cluster",
 }
 
 live_logs = []
@@ -110,11 +109,11 @@ async def add_log(level, msg):
 
 def check_finsight_system():
     """
-    Real health check against your actual FinSight project. Unlike the
-    previous version, failures are NOT masked as healthy — if FinSight is
-    asleep (Render free-tier cold start) or genuinely down, this reports
-    status "failed" so the dashboard reflects reality and the healing
-    loop has something true to react to.
+    Real health check against your actual FinSight project. Failures are
+    NOT masked as healthy — if FinSight is asleep (Render free-tier cold
+    start) or genuinely down, this reports status "failed" so the
+    dashboard reflects reality and the healing loop has something true
+    to react to.
     """
     gateway_health = {"id": "gateway", "name": "FinSight API Gateway", "status": "failed", "latency": 0}
     mongo_health = {"id": "mongo", "name": "Primary MongoDB Cluster", "status": "failed", "latency": 0}
@@ -137,33 +136,46 @@ def check_finsight_system():
             mongo_health["name"] = db_name
             mongo_health["latency"] = latency
     except Exception:
-        # Deliberately do nothing here — the "failed" defaults above stand.
-        # A silent except that resets to "healthy" is exactly the bug that
-        # made the dashboard lie about system state.
+        # Deliberately do nothing — the "failed" defaults above stand.
         pass
 
     return gateway_health, mongo_health
 
 
-def roll_simulated_fault(service_id: str) -> bool:
-    """Probabilistic fault injection for services without a real backend to poll."""
-    cfg = SIMULATED_SERVICES[service_id]
-    return random.random() < cfg["fail_chance"]
+def fetch_github_file_content(repo_full_name: str, file_path: str, ref: str) -> str:
+    """
+    Fetch a file's real content at a specific commit via the GitHub
+    Contents API. Returns "" on any failure (missing token for a private
+    repo, rate limit, network issue, binary file, etc.) — the caller logs
+    that as a scan gap rather than blocking the whole pipeline on an API
+    hiccup. If you want a hard fail-closed policy instead (block deploys
+    whenever a file can't be verified), that's a one-line change in
+    run_real_deployment_pipeline where scan_gaps is checked.
+    """
+    if not repo_full_name or not file_path or not ref:
+        return ""
+    url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={ref}"
+    headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Sentinel-AIOps"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content_b64 = data.get("content", "")
+        if not content_b64:
+            return ""
+        return base64.b64decode(content_b64).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 def build_rca(service_id: str, service_name: str) -> dict:
-    if service_id in ("gateway", "mongo"):
-        return {
-            "severity": "CRITICAL",
-            "confidence": random.randint(90, 99),
-            "rootCause": f"{service_name} failed live health verification — consistent with a cold-start delay, network partition, or the service being genuinely down.",
-            "remediation": "Re-issue the deploy hook / restart command and re-verify the health endpoint before closing the incident.",
-        }
     return {
-        "severity": "WARNING",
-        "confidence": random.randint(85, 97),
-        "rootCause": f"{service_name} failed a simulated health probe, standing in for container-level instability or a transient network blip.",
-        "remediation": f"Restart the {service_name} container and re-route traffic once it reports healthy.",
+        "severity": "CRITICAL",
+        "confidence": random.randint(90, 99),
+        "rootCause": f"{service_name} failed live health verification — consistent with a cold-start delay, network partition, or the service being genuinely down.",
+        "remediation": "Re-issue the deploy hook / restart command and re-verify the health endpoint before closing the incident.",
     }
 
 
@@ -192,7 +204,7 @@ async def autonomous_heal(service_id: str, service_name: str):
         except Exception:
             pass
 
-    if service_id in ("gateway", "mongo") and RENDER_BACKEND_HOOK_URL:
+    if RENDER_BACKEND_HOOK_URL:
         await add_log("INFO", f"[{incident_id}] Sending recovery command to Render Cloud API...")
         try:
             urllib.request.urlopen(RENDER_BACKEND_HOOK_URL, timeout=5)
@@ -208,14 +220,10 @@ async def autonomous_heal(service_id: str, service_name: str):
             await add_log("ANOMALY", f"[{incident_id}] Render API unreachable: {str(e)}")
             await asyncio.sleep(4)
     else:
+        await add_log("ANOMALY", f"[{incident_id}] RENDER_BACKEND_HOOK_URL not configured — cannot trigger a real restart.")
         await asyncio.sleep(4)
-        if service_id in system_state:
-            system_state[service_id]["status"] = "healthy"
-            cfg = SIMULATED_SERVICES.get(service_id)
-            if cfg:
-                system_state[service_id]["latency"] = random.randint(*cfg["base_latency"])
 
-    await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restored to healthy state.")
+    await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} restoration cycle complete.")
     await send_dispatch_alert(f"Resolved {incident_id}", f"✅ **{service_name}** successfully stabilized.", color=3066993)
 
     for inc in live_incidents:
@@ -231,7 +239,14 @@ async def autonomous_heal(service_id: str, service_name: str):
     healing_in_progress.remove(service_id)
 
 
-async def run_real_deployment_pipeline(commit_hash: str, author: str, message: str, modified_files: list, file_contents: str):
+async def run_real_deployment_pipeline(
+    commit_hash: str,
+    author: str,
+    message: str,
+    modified_files: list,
+    repo_full_name: str = None,
+    full_commit_sha: str = None,
+):
     global deployment_state
     deployment_state = {
         "status": "in_progress",
@@ -243,15 +258,38 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
     await add_log("INFO", f"CI/CD Pipeline started for commit {commit_hash} by {author}")
     await asyncio.sleep(1)
 
+    # Pull the REAL file content for every changed file, instead of just
+    # scanning the commit message + filenames (which is all a GitHub push
+    # webhook gives you by default, and is why the previous version never
+    # actually caught anything inside the code itself).
+    combined_content = message
+    scan_gaps = []
+    if repo_full_name and full_commit_sha and modified_files:
+        await add_log("INFO", f"Fetching real file content for {len(modified_files)} changed file(s) from GitHub...")
+        for file_path in modified_files:
+            content = fetch_github_file_content(repo_full_name, file_path, full_commit_sha)
+            if content:
+                combined_content += "\n" + content
+            else:
+                scan_gaps.append(file_path)
+        if scan_gaps:
+            await add_log(
+                "ANOMALY",
+                f"Could not fetch content for: {', '.join(scan_gaps)} — verify GITHUB_TOKEN is set if this repo is private.",
+            )
+    elif modified_files:
+        # Manual trigger or missing repo info — no real content available,
+        # so fall back to filenames only (weaker, but transparent about it).
+        combined_content += " " + " ".join(modified_files)
+
     secret_patterns = {
         "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
         "Stripe/OpenAI Secret Key": r"sk-[a-zA-Z0-9]{20,}",
         "GitHub Access Token": r"ghp_[a-zA-Z0-9]{36}",
     }
 
-    scannable_text = file_contents + " " + message
     for name, pattern in secret_patterns.items():
-        if re.search(pattern, scannable_text):
+        if re.search(pattern, combined_content):
             deployment_state["stage"] = f"Security Violation: Exposed {name} detected!"
             deployment_state["status"] = "failed"
             await add_log("ANOMALY", f"CRITICAL: Exposed {name} found in commit {commit_hash}!")
@@ -259,10 +297,17 @@ async def run_real_deployment_pipeline(commit_hash: str, author: str, message: s
             await send_dispatch_alert("Security Violation Blocked", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    if " = ;" in scannable_text or "const sentinelCrashTest =" in scannable_text:
-        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed."
+    # Heuristic syntax check: an assignment immediately followed by a
+    # semicolon (`x = ;`) is a broken statement in virtually every C-like
+    # language. This is NOT a real parser — there's no Node/Python runtime
+    # for the pushed repo's language available on this backend — but it
+    # catches exactly the class of "intentional break" you're testing with,
+    # and is honest about being a heuristic rather than pretending to be
+    # a full compiler check.
+    if re.search(r"=\s*;", combined_content):
+        deployment_state["stage"] = "Pre-flight Error: Syntax verification failed (empty assignment detected)."
         deployment_state["status"] = "failed"
-        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression detected.")
+        await add_log("ANOMALY", f"Pre-flight failed on commit {commit_hash}: Invalid syntax expression detected in real file content.")
         await add_log("REMEDIATED", "Auto-rollback complete. Production protected from faulty release.")
         await send_dispatch_alert("Pre-Flight Failure Blocked", f"🚨 Blocked push from {author} due to syntax/compilation failure.", color=15158332)
         return
@@ -312,7 +357,7 @@ async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTas
     author = payload.get("author", "DevOps Engineer")
     message = payload.get("message", "Manual pre-flight test triggered")
 
-    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, [], message)
+    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, [])
     return {"message": "Manual pre-flight test triggered.", "accepted": True}
 
 
@@ -324,26 +369,30 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
         payload = {}
 
     try:
-        repo_name = str(payload.get("repository", {}).get("name", "finsight"))
+        repo_full_name = str(payload.get("repository", {}).get("full_name", ""))
         head = payload.get("head_commit") or {}
-        commit_hash = str(head.get("id", "gitpush"))[:7]
+        full_commit_sha = str(head.get("id", ""))
+        commit_hash = full_commit_sha[:7] if full_commit_sha else "gitpush"
         author_obj = head.get("author") or {}
         author = str(author_obj.get("name", "GitHub Committer"))
         message = str(head.get("message", "Git push event"))
         added = head.get("added") or []
         modified = head.get("modified") or []
         all_modified_files = list(added) + list(modified)
-        file_contents_proxy = message + " " + " ".join(all_modified_files)
     except Exception:
-        repo_name = "finsight"
+        repo_full_name = ""
+        full_commit_sha = ""
         commit_hash = "gitpush"
         author = "Developer"
         message = "Code push event"
         all_modified_files = []
-        file_contents_proxy = "push event"
 
-    background_tasks.add_task(run_real_deployment_pipeline, commit_hash, author, message, all_modified_files, file_contents_proxy)
-    return {"message": f"Webhook accepted for {repo_name}. Pipeline launched."}
+    background_tasks.add_task(
+        run_real_deployment_pipeline,
+        commit_hash, author, message, all_modified_files,
+        repo_full_name, full_commit_sha,
+    )
+    return {"message": f"Webhook accepted for {repo_full_name or 'unknown repo'}. Pipeline launched."}
 
 
 @app.websocket("/ws/telemetry")
@@ -357,20 +406,12 @@ async def websocket_telemetry(websocket: WebSocket):
             memory_info = psutil.virtual_memory()
             disk_info = psutil.disk_usage('/')
 
-            # --- Real check: FinSight (your actual last-year project) ---
+            # Real check against FinSight — this is the only monitored
+            # target for now. Multi-service monitoring comes back once
+            # the other mock services actually have a live URL to poll.
             finsight_gateway, finsight_mongo = check_finsight_system()
 
-            # --- Simulated fault injection: services with no live backend ---
-            for sid in SIMULATED_SERVICES:
-                if system_state[sid]["status"] == "healthy" and sid not in healing_in_progress:
-                    if roll_simulated_fault(sid):
-                        system_state[sid]["status"] = "failed"
-                        system_state[sid]["latency"] = 0
-
-            # --- This is the loop that was missing: actually watch for ---
-            # --- failures and kick off autonomous_heal on its own.     ---
-            services_to_check = [finsight_gateway, finsight_mongo] + list(system_state.values())
-            for svc in services_to_check:
+            for svc in (finsight_gateway, finsight_mongo):
                 if svc["status"] == "failed" and svc["id"] not in healing_in_progress:
                     asyncio.create_task(autonomous_heal(svc["id"], svc["name"]))
 
@@ -381,13 +422,7 @@ async def websocket_telemetry(websocket: WebSocket):
                     "disk_usage": disk_info.percent,
                     "network_throughput": random.randint(30, 85),
                 },
-                "services": [
-                    finsight_gateway,
-                    system_state["auth"],
-                    system_state["ecommerce"],
-                    finsight_mongo,
-                    system_state["chatbot"],
-                ],
+                "services": [finsight_gateway, finsight_mongo],
                 "logs": live_logs,
                 "incidents": live_incidents,
                 "deployment": deployment_state,
@@ -401,6 +436,6 @@ async def websocket_telemetry(websocket: WebSocket):
 @app.post("/api/heal/{service_id}")
 async def execute_auto_heal(service_id: str):
     await add_log("AUTO-HEAL", f"Manual remediation sequence started for {service_id}")
-    name = system_state.get(service_id, {}).get("name", service_id)
+    name = SERVICE_DISPLAY_NAMES.get(service_id, service_id)
     await autonomous_heal(service_id, name)
     return {"status": "success"}
