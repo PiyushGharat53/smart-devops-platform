@@ -6,6 +6,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
     const currentRps = trafficHistory.length > 0 ? trafficHistory[trafficHistory.length - 1].rps : 0;
     const themeColor = defenseModeActive ? '#ef4444' : '#38bdf8';
     const gradientId = defenseModeActive ? 'colorAlert' : 'colorNormal';
+    const SPIKE_LIMIT = 8.0;
 
     return (
         <div style={{
@@ -54,7 +55,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                 <span style={{ fontSize: 12, color: '#64748b' }}>req/s</span>
                 {defenseModeActive && (
                     <span style={{ fontSize: 12, color: '#fca5a5', background: 'rgba(239,68,68,0.15)', padding: '2px 8px', borderRadius: 6 }}>
-                        Threshold exceeded (15 req/s). Active defense throttling in progress.
+                        Threshold exceeded ({SPIKE_LIMIT} req/s). Active defense throttling in progress.
                     </span>
                 )}
             </div>
@@ -62,7 +63,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
             {/* Responsive Recharts Container */}
             <div style={{ width: '100%', height: 220, marginTop: 4 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={trafficHistory} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                    <AreaChart data={trafficHistory} margin={{ top: 15, right: 10, left: -25, bottom: 0 }}>
                         <defs>
                             <linearGradient id="colorNormal" x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.4}/>
@@ -84,7 +85,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                         <YAxis 
                             stroke="#64748b" 
                             fontSize={11}
-                            domain={[0, 'auto']}
+                            domain={[0, (dataMax) => Math.max(16, Math.ceil(dataMax + 4))]}
                         />
                         <Tooltip 
                             contentStyle={{ backgroundColor: '#0f0d22', borderColor: 'rgba(139,92,246,0.3)', color: '#fff', borderRadius: '8px', fontSize: '12px' }}
@@ -92,11 +93,11 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                             labelStyle={{ color: '#94a3b8', marginBottom: '2px' }}
                         />
                         <ReferenceLine 
-                            y={15} 
+                            y={SPIKE_LIMIT} 
                             stroke="#ef4444" 
                             strokeDasharray="4 4" 
-                            label={{ position: 'insideTopLeft', value: 'Spike Threshold (15 req/s)', fill: '#ef4444', fontSize: 10 }} 
-                            />
+                            label={{ position: 'insideTopLeft', value: `Spike Threshold (${SPIKE_LIMIT} req/s)`, fill: '#ef4444', fontSize: 10 }} 
+                        />
                         <Area 
                             type="monotone" 
                             dataKey="rps" 
