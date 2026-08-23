@@ -80,9 +80,8 @@ deployment_state: Dict[str, Any] = {
 # Helper Utilities
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
-    """Dispatches asynchronous alerts to Discord with error tracking."""
+    """Dispatches asynchronous alerts to Discord with smart error tracking."""
     if not DISCORD_WEBHOOK_URL:
-        await add_log("ANOMALY", "Discord alert skipped: DISCORD_WEBHOOK_URL is missing.")
         return
         
     payload = {
@@ -94,7 +93,6 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
         }]
     }
     
-    # Discord requires a User-Agent or it will silently block the request (403 Forbidden)
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Sentinel-AIOps/1.0"
@@ -103,9 +101,14 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-            # If Discord rejects it, log the exact reason to the dashboard so we aren't flying blind
+            
             if response.status_code not in (200, 204):
-                await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {response.text}")
+                error_text = response.text
+                # SMART LOGGING: If Discord sends back a massive HTML firewall page, summarize it.
+                if "<html" in error_text.lower() or "cloudflare" in error_text.lower():
+                    error_text = "Blocked by Discord Cloudflare Firewall (Shared IP Rate Limit)."
+                    
+                await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
     except Exception as e:
         await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
 
