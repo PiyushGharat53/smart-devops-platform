@@ -24,9 +24,8 @@ class TrafficWatchdog:
         self.previous_request_count = None
         self.last_check_time = None
         
-        # New Feature: Require manual approval for high-risk defense actions
         self.pending_approval_required = True
-        self.approval_status = "IDLE" # IDLE, PENDING, APPROVED, REJECTED
+        self.approval_status = "IDLE"
 
     async def start_monitoring(self, target_service_name: str):
         self.is_monitoring = True
@@ -86,7 +85,6 @@ class TrafficWatchdog:
             
             await self.add_log("ANOMALY", f"[{self.current_incident_id}] INTELLIGENCE: Volumetric surge detected ({current_rps:.2f} req/s). Confidence: {confidence_score}%. Awaiting operator confirmation.")
             
-            # Create incident with advanced SRE evidence payload
             self.create_incident({
                 "id": self.current_incident_id,
                 "service": service_name,
@@ -107,7 +105,6 @@ class TrafficWatchdog:
             )
 
     def authorize_remediation(self, action: str):
-        """Manually approve or reject the suggested auto-heal action"""
         if action == "APPROVE":
             self.approval_status = "APPROVED"
             return {"status": "success", "message": "Remediation authorized. Blast shields deployed."}
