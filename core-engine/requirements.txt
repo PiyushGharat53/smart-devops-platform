@@ -9,3 +9,4 @@ psutil
 PyYAML
 motor
 websockets
+httpx
