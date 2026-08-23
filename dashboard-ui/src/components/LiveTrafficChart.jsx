@@ -54,7 +54,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                 <span style={{ fontSize: 12, color: '#64748b' }}>req/s</span>
                 {defenseModeActive && (
                     <span style={{ fontSize: 12, color: '#fca5a5', background: 'rgba(239,68,68,0.15)', padding: '2px 8px', borderRadius: 6 }}>
-                        Threshold exceeded (45 req/s). Active defense throttling in progress.
+                        Threshold exceeded (15 req/s). Active defense throttling in progress.
                     </span>
                 )}
             </div>
@@ -92,11 +92,11 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                             labelStyle={{ color: '#94a3b8', marginBottom: '2px' }}
                         />
                         <ReferenceLine 
-                            y={45} 
+                            y={15} 
                             stroke="#ef4444" 
                             strokeDasharray="4 4" 
-                            label={{ position: 'insideTopLeft', value: 'Spike Threshold (45 req/s)', fill: '#ef4444', fontSize: 10 }} 
-                        />
+                            label={{ position: 'insideTopLeft', value: 'Spike Threshold (15 req/s)', fill: '#ef4444', fontSize: 10 }} 
+                            />
                         <Area 
                             type="monotone" 
                             dataKey="rps" 
