@@ -23,13 +23,11 @@ class TrafficWatchdog:
         self.spike_threshold = 8.0
         self.previous_request_count = None
         self.last_check_time = None
-        
-        self.pending_approval_required = True
-        self.approval_status = "IDLE"
+        self.cooldown_counter = 0
 
     async def start_monitoring(self, target_service_name: str):
         self.is_monitoring = True
-        await self.add_log("INFO", f"Traffic Watchdog initialized for {target_service_name}. Running Intelligent SRE Engine...")
+        await self.add_log("INFO", f"Traffic Watchdog initialized for {target_service_name}. Autonomous SRE Engine active.")
         
         async with httpx.AsyncClient(timeout=5.0) as client:
             while self.is_monitoring:
@@ -61,8 +59,23 @@ class TrafficWatchdog:
                     current_rps = 0.0
                     self.previous_request_count = None
 
+                # If defense mode is active, simulate active throttling easing down traffic
                 if self.defense_mode_active:
-                    current_rps = random.uniform(2.0, 5.0)
+                    current_rps = max(2.0, current_rps - 3.0)
+                    self.cooldown_counter += 1
+                    
+                    # Auto-heal after a brief stabilization window
+                    if self.cooldown_counter >= 6: # ~12 seconds
+                        self.defense_mode_active = False
+                        self.cooldown_counter = 0
+                        if self.current_incident_id:
+                            self.resolve_incident(self.current_incident_id)
+                            await self.add_log("REMEDIATED", f"[{self.current_incident_id}] Traffic normalized. Active defense disengaged. Incident resolved.")
+                            await self.dispatch_alert(
+                                f"System Recovered: {target_service_name}",
+                                f"✅ **Auto-Healing Successful!**\nTraffic levels returned to normal baselines. Incident `{self.current_incident_id}` closed.",
+                                color=3066993
+                            )
 
                 data_point = {
                     "time": current_time_str,
@@ -78,40 +91,28 @@ class TrafficWatchdog:
     async def _analyze_traffic(self, service_name: str, current_rps: float):
         if current_rps > self.spike_threshold and not self.defense_mode_active:
             self.defense_mode_active = True
+            self.cooldown_counter = 0
             self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
-            self.approval_status = "PENDING"
             
-            confidence_score = random.randint(88, 98)
-            
-            await self.add_log("ANOMALY", f"[{self.current_incident_id}] INTELLIGENCE: Volumetric surge detected ({current_rps:.2f} req/s). Confidence: {confidence_score}%. Awaiting operator confirmation.")
+            await self.add_log("ANOMALY", f"[{self.current_incident_id}] VOLUMETRIC SURGE: {current_rps:.2f} req/s detected. Engaging active defense & auto-remediation.")
             
             self.create_incident({
                 "id": self.current_incident_id,
                 "service": service_name,
                 "service_id": "traffic_watchdog",
-                "title": "Anomalous Traffic Spike - Risk Analysis Complete",
-                "status": "Pending Operator Approval",
+                "title": "Volumetric Traffic Spike Detected",
+                "status": "Mitigating (Active Defense Engaged)",
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "severity": "CRITICAL",
-                "confidence": confidence_score,
-                "rootCause": f"Volumetric traffic surge of {current_rps:.2f} req/s matched DDoS heuristic profile.",
-                "remediation": "Isolate source IP and engage rate-limiting blast shield."
+                "rootCause": f"Sudden volumetric traffic surge of {current_rps:.2f} req/s.",
+                "remediation": "Rate-limiting active defense engaged. Monitoring stabilization."
             })
             
             await self.dispatch_alert(
-                f"Risk Analysis: {service_name}",
-                f"⚠️ **Explain Before Heal Triggered!**\n**Spike Rate:** {current_rps:.2f} req/s\n**Confidence:** {confidence_score}%\n**Action Required:** Operator authorization needed to deploy firewall rules.",
-                color=16776960
+                f"Critical Incident: {service_name}",
+                f"🚨 **Traffic Spike Detected!**\n**Rate:** {current_rps:.2f} req/s\n**Action:** Active defense shield engaged automatically.",
+                color=15158332
             )
-
-    def authorize_remediation(self, action: str):
-        if action == "APPROVE":
-            self.approval_status = "APPROVED"
-            return {"status": "success", "message": "Remediation authorized. Blast shields deployed."}
-        else:
-            self.approval_status = "REJECTED"
-            self.defense_mode_active = False
-            return {"status": "success", "message": "Remediation cancelled by operator."}
 
     def get_current_metrics(self):
         return list(self.traffic_history)
