@@ -13,6 +13,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Background
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from traffic_watchdog import TrafficWatchdog
+
 # ==========================================
 # Configuration & Environment Variables
 # ==========================================
@@ -36,26 +38,6 @@ if MONGO_URI:
     incidents_collection = sentinel_db["incidents"]
 
 # ==========================================
-# Lifespan Context Manager
-# ==========================================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    psutil.cpu_percent(interval=None) 
-    yield
-    if db_client:
-        db_client.close()
-
-app = FastAPI(title="Sentinel AIOps Engine", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ==========================================
 # In-Memory State & Constants
 # ==========================================
 WORKSPACES = [
@@ -77,13 +59,11 @@ deployment_state: Dict[str, Any] = {
 }
 
 # ==========================================
-# Helper Utilities
+# Helper Utilities & Callbacks
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
-    """Dispatches asynchronous alerts to Discord with smart error tracking."""
     if not DISCORD_WEBHOOK_URL:
         return
-        
     payload = {
         "embeds": [{
             "title": f"🛡️ Sentinel AIOps: {title}",
@@ -92,22 +72,17 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
         }]
     }
-    
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Sentinel-AIOps/1.0"
     }
-    
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-            
             if response.status_code not in (200, 204):
                 error_text = response.text
-                # SMART LOGGING: If Discord sends back a massive HTML firewall page, summarize it.
                 if "<html" in error_text.lower() or "cloudflare" in error_text.lower():
                     error_text = "Blocked by Discord Cloudflare Firewall (Shared IP Rate Limit)."
-                    
                 await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
     except Exception as e:
         await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
@@ -130,6 +105,49 @@ async def add_log(level: str, msg: str):
         except Exception:
             pass
 
+def create_incident_callback(incident_doc: dict):
+    live_incidents.append(incident_doc)
+
+def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
+    for inc in live_incidents:
+        if inc.get("id") == incident_id:
+            inc["status"] = "Resolved"
+            inc["remediation"] = note
+
+# Initialize the Traffic Watchdog Engine
+traffic_watchdog = TrafficWatchdog(
+    dispatch_alert_cb=send_dispatch_alert,
+    add_log_cb=add_log,
+    create_incident_cb=create_incident_callback,
+    resolve_incident_cb=resolve_incident_callback
+)
+
+# ==========================================
+# Lifespan Context Manager
+# ==========================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    psutil.cpu_percent(interval=None)
+    # Start the continuous Traffic Watchdog in the background
+    watchdog_task = asyncio.create_task(traffic_watchdog.start_monitoring("FinSight Engine"))
+    yield
+    watchdog_task.cancel()
+    if db_client:
+        db_client.close()
+
+app = FastAPI(title="Sentinel AIOps Engine", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==========================================
+# Core Infrastructure Monitoring & Healing
+# ==========================================
 async def check_finsight_system():
     gateway_health = {"id": "gateway", "name": "FinSight API Gateway", "status": "healthy", "latency": 45}
     mongo_health = {"id": "mongo", "name": "Primary MongoDB Cluster", "status": "healthy", "latency": 48}
@@ -155,14 +173,12 @@ async def check_finsight_system():
     return gateway_health, mongo_health
 
 async def autonomous_heal(service_id: str, service_name: str):
-    """Executes REAL automated remediation by triggering Render's API."""
     if service_id in healing_in_progress:
         return
-        
     healing_in_progress.add(service_id)
     incident_id = f"INC-{random.randint(1000, 9999)}"
     await add_log("ANOMALY", f"[{incident_id}] {service_name} anomaly detected. Auto-Heal active...")
-    
+
     await send_dispatch_alert(
         f"Incident {incident_id} Active", 
         f"🚨 **{service_name}** requires attention. Initiating Render Server Reboot.", 
@@ -175,7 +191,6 @@ async def autonomous_heal(service_id: str, service_name: str):
         "rootCause": f"{service_name} experienced transient resource contention.",
         "remediation": "Render Deploy Hook triggered for live container reboot."
     }
-    
     incident_doc = {
         "id": incident_id,
         "service": service_name,
@@ -187,28 +202,20 @@ async def autonomous_heal(service_id: str, service_name: str):
     }
     live_incidents.append(incident_doc)
 
-    # ========================================================
-    # THE MAGIC: HITTING THE RENDER API TO REBOOT THE SERVER
-    # ========================================================
     if FINSIGHT_DEPLOY_HOOK_URL and "gateway" in service_id.lower():
         try:
-            # We fire a POST request to Render. This kills the frozen container.
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(FINSIGHT_DEPLOY_HOOK_URL)
             await add_log("INFO", f"[{incident_id}] Render API accepted reboot command for {service_name}.")
         except Exception as e:
             await add_log("ANOMALY", f"[{incident_id}] Render API reboot failed: {str(e)}")
-            
-    # Give the UI a few seconds to process the commands
+
     await asyncio.sleep(4)
-    
-    # Restore the health status on the dashboard
     if service_id in system_state:
         system_state[service_id]["status"] = "healthy"
         system_state[service_id]["latency"] = random.randint(35, 80)
 
     await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} reboot command executed.")
-    
     await send_dispatch_alert(
         f"Resolved {incident_id}", 
         f"✅ **{service_name}** container reboot triggered successfully.", 
@@ -218,7 +225,6 @@ async def autonomous_heal(service_id: str, service_name: str):
     for inc in live_incidents:
         if inc["id"] == incident_id:
             inc["status"] = "Resolved"
-            
     healing_in_progress.remove(service_id)
 
 async def run_real_deployment_pipeline(
@@ -247,7 +253,6 @@ async def run_real_deployment_pipeline(
         await send_dispatch_alert("Pipeline Blocked", "🚨 Could not fetch code for verification.", color=15158332)
         return
 
-    # STEP 2: EXPANDED SECRET SHIELD
     secret_patterns = {
         "MongoDB URI": r"mongodb(?:\+srv)?:\/\/(?:[a-zA-Z0-9_]+):(?:[a-zA-Z0-9_]+)@",
         "Stripe/OpenAI Secret Key": r"sk-(?:live|test)-[a-zA-Z0-9]{20,}",
@@ -274,12 +279,11 @@ async def run_real_deployment_pipeline(
             await send_dispatch_alert("Security Block", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
-    # STEP 2: EXPANDED SYNTAX VERIFICATION
     await asyncio.sleep(1) 
     syntax_fails = [
-        r"(?:const|let|var)\s+\w+\s*=\s*;", # Unassigned variables
-        r"eval\s*\(",                        # Dangerous eval usage
-        r"sentinelCrashTest"                # Manual trigger
+        r"(?:const|let|var)\s+\w+\s*=\s*;",
+        r"eval\s*\(",
+        r"sentinelCrashTest"
     ]
     
     for fail_pattern in syntax_fails:
@@ -326,7 +330,7 @@ async def run_real_deployment_pipeline(
     }
 
 # ==========================================
-# API Endpoints
+# Endpoints & WebSocket
 # ==========================================
 @app.get("/")
 async def read_root():
@@ -437,17 +441,18 @@ async def websocket_telemetry(websocket: WebSocket):
                 "logs": live_logs,
                 "incidents": live_incidents,
                 "deployment": deployment_state,
+                # Real-time traffic stream & defense state
+                "traffic_history": traffic_watchdog.get_current_metrics(),
+                "defense_mode_active": traffic_watchdog.defense_mode_active
             }
             await websocket.send_json(payload)
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass
 
-# STEP 1: CONTEXT-AWARE HEALING ENDPOINT
 @app.post("/api/heal/{service_id}")
 async def execute_auto_heal(service_id: str):
     if service_id == "pipeline":
-        # Acknowledge and Dismiss CI/CD Alerts instead of attempting to "Heal" a container
         await add_log("INFO", "CI/CD Pipeline incident acknowledged and dismissed by engineer.")
         for inc in live_incidents:
             if inc.get("service_id") == "pipeline" and inc.get("status") != "Resolved":
@@ -455,6 +460,5 @@ async def execute_auto_heal(service_id: str):
                 inc["remediation"] = "Alert dismissed. Awaiting developer fix."
         return {"status": "dismissed"}
         
-    # Standard runtime auto-healing for actual live services
     await autonomous_heal(service_id, service_id)
     return {"status": "success"}
