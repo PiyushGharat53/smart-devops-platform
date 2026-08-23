@@ -1,4 +1,5 @@
 // App.jsx
+import LiveTrafficChart from './components/LiveTrafficChart';
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
@@ -58,8 +59,6 @@ const GLOBAL_CSS = `
 }
 `;
 
-// Fallback used only if GET /api/workspaces can't be reached — keeps the
-// switcher usable even if the backend is briefly unavailable on load.
 const FALLBACK_WORKSPACES = [
   { id: "finsight", label: "FinSight Financial Engine", env: "Production", service_ids: ["gateway", "mongo"] },
   { id: "chatbot", label: "Campus Multilingual Chatbot", env: "Staging", service_ids: ["chatbot"] },
@@ -212,6 +211,11 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [telemetry, setTelemetry] = useState({ cpu: 0, mem: 0, disk: 0, net: 0 });
   const [deployment, setDeployment] = useState({ status: "idle", stage: "Pipeline Ready & Listening" });
+  
+  // New State variables for Phase 3 Traffic Watchdog
+  const [trafficHistory, setTrafficHistory] = useState([]);
+  const [defenseModeActive, setDefenseModeActive] = useState(false);
+
   const [connectionState, setConnectionState] = useState("connecting"); // connecting | live | reconnecting | offline
   const [triggeringPipeline, setTriggeringPipeline] = useState(false);
 
@@ -222,14 +226,10 @@ export default function App() {
 
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) || workspaces[0];
 
-  // Filter services by the active workspace's declared membership.
-  // service_ids === null means "show everything" (the core/all-services workspace).
   const visibleServices = activeWorkspace?.service_ids
     ? services.filter((s) => activeWorkspace.service_ids.includes(s.id))
     : services;
 
-  // Fetch workspace definitions once from the backend; fall back silently
-  // to the local constant if the request fails so the UI stays usable.
   useEffect(() => {
     let cancelled = false;
     axios.get(`${BACKEND_HTTP_URL}/api/workspaces`)
@@ -247,12 +247,11 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // Auto-scroll the terminal
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
   }, [logs]);
 
-  // WEBSOCKET CONNECTION with basic auto-reconnect + connection status
+  // WEBSOCKET CONNECTION
   useEffect(() => {
     let isUnmounted = false;
 
@@ -279,6 +278,10 @@ export default function App() {
           setLogs(data.logs || []);
           setIncidents(data.incidents || []);
           if (data.deployment) setDeployment(data.deployment);
+          
+          // Phase 3 Traffic Data processing
+          setTrafficHistory(data.traffic_history || []);
+          setDefenseModeActive(data.defense_mode_active || false);
         } catch (err) {
           console.error("Failed to parse telemetry payload", err);
         }
@@ -308,10 +311,8 @@ export default function App() {
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: "healing" } : s)));
     try {
       await axios.post(`${BACKEND_HTTP_URL}/api/heal/${id}`);
-      // The WebSocket will naturally broadcast the fixed state back to us.
     } catch (error) {
       console.error("Heal failed", error);
-      // Revert the optimistic update so the UI doesn't lie about state.
       setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: "failed" } : s)));
     }
   }, []);
@@ -363,7 +364,7 @@ export default function App() {
 
       <main style={{ maxWidth: 1600, margin: "0 auto", padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
 
-        {/* PERMANENT CI/CD PIPELINE DECK — always visible, idle or active */}
+        {/* PERMANENT CI/CD PIPELINE DECK */}
         <GlassPanel style={{
           padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12,
           border: deployment.status === "failed" || deployment.status === "rolled_back" ? "1px solid rgba(239,68,68,0.5)"
@@ -481,6 +482,15 @@ export default function App() {
           </GlassPanel>
         </div>
 
+        {/* ========================================================= */}
+        {/* LIVE TRAFFIC CHART (NEW PHASE 3 FEATURE)                  */}
+        {/* ========================================================= */}
+        <LiveTrafficChart 
+            trafficHistory={trafficHistory} 
+            defenseModeActive={defenseModeActive} 
+        />
+        {/* ========================================================= */}
+
         {/* TERMINAL */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}><Terminal size={15} color="#a5b4fc" /> AIOps Execution Log</h2>
@@ -497,7 +507,7 @@ export default function App() {
           </div>
         </GlassPanel>
 
-        {/* PERSISTENT INCIDENT FEED — active + recently resolved, always visible */}
+        {/* PERSISTENT INCIDENT FEED */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}><AlertTriangle size={15} color="#a5b4fc" /> Incident Feed</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
