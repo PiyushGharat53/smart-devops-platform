@@ -69,6 +69,14 @@ deployment_state = {
 
 healing_in_progress = set()
 
+# After a heal attempt finishes, wait this long before opening a NEW
+# incident for the same service — even if it's still failing. Without
+# this, a genuinely-still-broken service gets a brand new incident every
+# single 2-second poll tick, which floods the log/incident feed and
+# looks like a bug even though each individual detection is real.
+HEAL_COOLDOWN_SECONDS = 60
+last_heal_attempt = {}
+
 
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
     if not DISCORD_WEBHOOK_URL:
@@ -236,6 +244,7 @@ async def autonomous_heal(service_id: str, service_name: str):
         except Exception:
             pass
 
+    last_heal_attempt[service_id] = time.time()
     healing_in_progress.remove(service_id)
 
 
@@ -412,7 +421,8 @@ async def websocket_telemetry(websocket: WebSocket):
             finsight_gateway, finsight_mongo = check_finsight_system()
 
             for svc in (finsight_gateway, finsight_mongo):
-                if svc["status"] == "failed" and svc["id"] not in healing_in_progress:
+                cooled_down = (time.time() - last_heal_attempt.get(svc["id"], 0)) > HEAL_COOLDOWN_SECONDS
+                if svc["status"] == "failed" and svc["id"] not in healing_in_progress and cooled_down:
                     asyncio.create_task(autonomous_heal(svc["id"], svc["name"]))
 
             payload = {
