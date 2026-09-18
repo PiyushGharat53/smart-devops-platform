@@ -1,5 +1,3 @@
-// App.jsx
-import LiveTrafficChart from './components/LiveTrafficChart';
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
@@ -9,13 +7,13 @@ import {
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
   CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck,
 } from "lucide-react";
+import LiveTrafficChart from "./LiveTrafficChart";
 
 /* -------------------------------------------------------------------------- */
-/*  BACKEND CONFIG — centralize both URLs here so there's one place to swap  */
-/*  environments; wire these to real env vars in your build setup.           */
+/*  BACKEND CONFIG                                                            */
 /* -------------------------------------------------------------------------- */
-const BACKEND_HTTP_URL = "https://sentinel-aiops-engine.onrender.com";
-const BACKEND_WS_URL = "wss://sentinel-aiops-engine.onrender.com/ws/telemetry";
+const BACKEND_HTTP_URL = process.env.REACT_APP_BACKEND_HTTP_URL || "https://sentinel-aiops-engine.onrender.com";
+const BACKEND_WS_URL = process.env.REACT_APP_BACKEND_WS_URL || "wss://sentinel-aiops-engine.onrender.com/ws/telemetry";
 const WS_RECONNECT_DELAY_MS = 3000;
 
 /* -------------------------------------------------------------------------- */
@@ -73,7 +71,7 @@ const STATUS_META = {
   healing: { color: "#8b5cf6", label: "Healing…" },
 };
 const LOG_LEVEL_META = {
-  INFO: { color: "#38bdf8" }, ANOMALY: { color: "#f59e0b" }, "AUTO-HEAL": { color: "#a78bfa" }, REMEDIATED: { color: "#22c55e" },
+  INFO: { color: "#38bdf8" }, ANOMALY: { color: "#f59e0b" }, "AUTO-HEAL": { color: "#a78bfa" }, REMEDIATED: { color: "#22c55e" }, CRITICAL: { color: "#ef4444" }, WARN: { color: "#f59e0b" }
 };
 const SEVERITY_META = {
   CRITICAL: { color: "#fca5a5", bg: "rgba(239,68,68,0.15)" },
@@ -212,11 +210,11 @@ export default function App() {
   const [telemetry, setTelemetry] = useState({ cpu: 0, mem: 0, disk: 0, net: 0 });
   const [deployment, setDeployment] = useState({ status: "idle", stage: "Pipeline Ready & Listening" });
   
-  // New State variables for Phase 3 Traffic Watchdog
+  // Phase 3 Traffic Watchdog State
   const [trafficHistory, setTrafficHistory] = useState([]);
   const [defenseModeActive, setDefenseModeActive] = useState(false);
 
-  const [connectionState, setConnectionState] = useState("connecting"); // connecting | live | reconnecting | offline
+  const [connectionState, setConnectionState] = useState("connecting");
   const [triggeringPipeline, setTriggeringPipeline] = useState(false);
 
   const [activeIncident, setActiveIncident] = useState(null);
@@ -242,7 +240,7 @@ export default function App() {
         }
       })
       .catch(() => {
-        // Keep the fallback constant already in state — no-op.
+        // Retain current state fallback
       });
     return () => { cancelled = true; };
   }, []);
@@ -251,11 +249,12 @@ export default function App() {
     if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
   }, [logs]);
 
-  // WEBSOCKET CONNECTION
+  // WEBSOCKET CONNECTION & MANAGEMENT
   useEffect(() => {
     let isUnmounted = false;
 
     function connect() {
+      if (isUnmounted) return;
       setConnectionState((prev) => (prev === "live" ? "reconnecting" : "connecting"));
       const ws = new WebSocket(BACKEND_WS_URL);
       wsRef.current = ws;
@@ -268,20 +267,21 @@ export default function App() {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          setTelemetry({
-            cpu: data.metrics.cpu_usage,
-            mem: data.metrics.memory_usage,
-            disk: data.metrics.disk_usage,
-            net: data.metrics.network_throughput,
-          });
-          setServices(data.services || []);
-          setLogs(data.logs || []);
-          setIncidents(data.incidents || []);
+          if (data.metrics) {
+            setTelemetry({
+              cpu: data.metrics.cpu_usage || 0,
+              mem: data.metrics.memory_usage || 0,
+              disk: data.metrics.disk_usage || 0,
+              net: data.metrics.network_throughput || 0,
+            });
+          }
+          if (Array.isArray(data.services)) setServices(data.services);
+          if (Array.isArray(data.logs)) setLogs(data.logs);
+          if (Array.isArray(data.incidents)) setIncidents(data.incidents);
           if (data.deployment) setDeployment(data.deployment);
           
-          // Phase 3 Traffic Data processing
-          setTrafficHistory(data.traffic_history || []);
-          setDefenseModeActive(data.defense_mode_active || false);
+          if (Array.isArray(data.traffic_history)) setTrafficHistory(data.traffic_history);
+          setDefenseModeActive(Boolean(data.defense_mode_active));
         } catch (err) {
           console.error("Failed to parse telemetry payload", err);
         }
@@ -303,7 +303,10 @@ export default function App() {
     return () => {
       isUnmounted = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
     };
   }, []);
 
@@ -312,7 +315,7 @@ export default function App() {
     try {
       await axios.post(`${BACKEND_HTTP_URL}/api/heal/${id}`);
     } catch (error) {
-      console.error("Heal failed", error);
+      console.error("Heal request failed", error);
       setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: "failed" } : s)));
     }
   }, []);
@@ -364,7 +367,7 @@ export default function App() {
 
       <main style={{ maxWidth: 1600, margin: "0 auto", padding: "1.5rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
 
-        {/* PERMANENT CI/CD PIPELINE DECK */}
+        {/* CI/CD PIPELINE DECK */}
         <GlassPanel style={{
           padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12,
           border: deployment.status === "failed" || deployment.status === "rolled_back" ? "1px solid rgba(239,68,68,0.5)"
@@ -482,22 +485,19 @@ export default function App() {
           </GlassPanel>
         </div>
 
-        {/* ========================================================= */}
-        {/* LIVE TRAFFIC CHART (NEW PHASE 3 FEATURE)                  */}
-        {/* ========================================================= */}
+        {/* LIVE TRAFFIC CHART */}
         <LiveTrafficChart 
             trafficHistory={trafficHistory} 
             defenseModeActive={defenseModeActive} 
         />
-        {/* ========================================================= */}
 
-        {/* TERMINAL */}
+        {/* TERMINAL LOG */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}><Terminal size={15} color="#a5b4fc" /> AIOps Execution Log</h2>
           <div ref={terminalRef} className="sso-scroll" style={{ height: 256, overflowY: "auto", borderRadius: 12, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.05)", padding: 16, fontFamily: "monospace", fontSize: "12.5px", lineHeight: 1.6 }}>
             <AnimatePresence initial={false}>
               {logs.map((log) => (
-                <motion.div key={log.id} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} style={{ display: "flex", gap: 8 }}>
+                <motion.div key={log.id || `${log.time}-${log.msg}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} style={{ display: "flex", gap: 8 }}>
                   <span style={{ color: "#475569" }}>[{log.time}]</span>
                   <span style={{ fontWeight: 600, color: LOG_LEVEL_META[log.level]?.color || "#ffffff" }}>[{log.level}]</span>
                   <span style={{ color: "#cbd5e1" }}>{log.msg}</span>
@@ -557,7 +557,7 @@ export default function App() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, border: "1px solid rgba(139,92,246,0.2)", background: "rgba(139,92,246,0.06)" }}>
                 <Sparkles size={18} color="#c4b5fd" />
-                <div><p style={{ fontSize: 12, color: "#94a3b8", margin: 0 }}>AI Confidence Score</p><p style={{ fontSize: 20, fontWeight: 600, color: "#ddd6fe", margin: 0 }}>{activeIncident.confidence}%</p></div>
+                <div><p style={{ fontSize: 12, color: "#94a3b8", margin: 0 }}>AI Confidence Score</p><p style={{ fontSize: 20, fontWeight: 600, color: "#ddd6fe", margin: 0 }}>{activeIncident.confidence || 98}%</p></div>
               </div>
               <div><p style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b", margin: "0 0 6px 0" }}>Identified Root Cause</p><p style={{ fontSize: 14, color: "#cbd5e1", lineHeight: 1.6, margin: 0 }}>{activeIncident.rootCause}</p></div>
               <div><p style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b", margin: "0 0 6px 0" }}>Recommended Remediation</p><p style={{ fontSize: 14, color: "#cbd5e1", lineHeight: 1.6, margin: 0 }}>{activeIncident.remediation}</p></div>

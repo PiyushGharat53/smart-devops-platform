@@ -91,6 +91,7 @@ export default function LiveTrafficChart({ trafficHistory = [], defenseModeActiv
                             contentStyle={{ backgroundColor: '#0f0d22', borderColor: 'rgba(139,92,246,0.3)', color: '#fff', borderRadius: '8px', fontSize: '12px' }}
                             itemStyle={{ color: '#fff', fontWeight: 600 }}
                             labelStyle={{ color: '#94a3b8', marginBottom: '2px' }}
+                            formatter={(value) => [`${Number(value).toFixed(2)} req/s`, 'Throughput']}
                         />
                         <ReferenceLine 
                             y={SPIKE_LIMIT} 
