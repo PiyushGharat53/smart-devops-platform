@@ -9,8 +9,10 @@ RAW_URL = os.getenv("FINSIGHT_API_URL") or os.getenv("BACKEND_URL") or "https://
 METRICS_URL = RAW_URL.rstrip('/') + "/metrics" if not RAW_URL.endswith('/metrics') else RAW_URL
 
 class TrafficWatchdog:
-    def __init__(self, target_url=METRICS_URL):
-        self.target_url = target_url
+    def __init__(self, target_url=None, dispatch_alert_cb=None, resolve_incident_cb=None, *args, **kwargs):
+        self.target_url = target_url or METRICS_URL
+        self.dispatch_alert_cb = dispatch_alert_cb
+        self.resolve_incident_cb = resolve_incident_cb
         self.is_running = False
         self.defense_mode_active = False
         self.traffic_history = []
