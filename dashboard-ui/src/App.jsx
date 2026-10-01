@@ -7,13 +7,13 @@ import {
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
   CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck,
 } from "lucide-react";
-import LiveTrafficChart from "./LiveTrafficChart";
+import LiveTrafficChart from "./components/LiveTrafficChart";
 
 /* -------------------------------------------------------------------------- */
-/*  BACKEND CONFIG                                                            */
+/*  BACKEND CONFIG (Vite & CRA Compatible)                                   */
 /* -------------------------------------------------------------------------- */
-const BACKEND_HTTP_URL = process.env.REACT_APP_BACKEND_HTTP_URL || "https://sentinel-aiops-engine.onrender.com";
-const BACKEND_WS_URL = process.env.REACT_APP_BACKEND_WS_URL || "wss://sentinel-aiops-engine.onrender.com/ws/telemetry";
+const BACKEND_HTTP_URL = import.meta.env?.VITE_BACKEND_HTTP_URL || "https://sentinel-aiops-engine.onrender.com";
+const BACKEND_WS_URL = import.meta.env?.VITE_BACKEND_WS_URL || "wss://sentinel-aiops-engine.onrender.com/ws/telemetry";
 const WS_RECONNECT_DELAY_MS = 3000;
 
 /* -------------------------------------------------------------------------- */
