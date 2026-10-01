@@ -18,7 +18,7 @@ class TrafficWatchdog:
         self.defense_mode_active = False
         self.traffic_history = []
 
-        # Registered services for the FinSight workspace
+        # Registered services for FinSight workspace
         self.services = [
             {"id": "gateway", "name": "FinSight API Gateway", "status": "healthy", "latency": 42},
             {"id": "mongo", "name": "Primary MongoDB Cluster", "status": "healthy", "latency": 18}
@@ -66,33 +66,43 @@ class TrafficWatchdog:
             "defense_mode_active": self.defense_mode_active
         }
 
-    def poll_once(self):
+    def _sync_poll(self):
         try:
-            resp = requests.get(self.target_url, timeout=4)
+            resp = requests.get(self.target_url, timeout=2)
             data = resp.json()
             if isinstance(data, dict):
                 self.latest_metrics.update(data)
-            print(f"[{time.strftime('%H:%M:%S')}] [INFO] Telemetry polled successfully.")
+            return True
         except Exception:
-            telemetry = self.generate_telemetry()
-            timestamp = time.strftime('%H:%M:%S')
-            print(f"[{timestamp}] [INFO] Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s | CPU: {telemetry['cpu_usage']}%")
-            
-            if len(self.logs) > 50:
-                self.logs.pop(0)
-            self.logs.append({
-                "id": str(time.time()),
-                "time": timestamp,
-                "level": "INFO",
-                "msg": f"Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s"
-            })
+            return False
+
+    async def poll_once_async(self):
+        loop = asyncio.get_running_loop()
+        success = await loop.run_in_executor(None, self._sync_poll)
+        
+        telemetry = self.generate_telemetry()
+        timestamp = time.strftime('%H:%M:%S')
+        
+        if success:
+            print(f"[{timestamp}] [INFO] Telemetry polled successfully.")
+        else:
+            print(f"[{timestamp}] [INFO] Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s")
+
+        if len(self.logs) > 50:
+            self.logs.pop(0)
+        self.logs.append({
+            "id": str(time.time()),
+            "time": timestamp,
+            "level": "INFO",
+            "msg": f"Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s | CPU: {telemetry['cpu_usage']}%"
+        })
         return self.latest_metrics
 
     async def start_monitoring(self, service_name="FinSight Engine", *args, **kwargs):
         self.is_running = True
         print(f"[INFO] Sentinel SRE Engine starting for {service_name}. Target Endpoint: {self.target_url}")
         while self.is_running:
-            self.poll_once()
+            await self.poll_once_async()
             await asyncio.sleep(2)
 
     def start(self):
