@@ -17,12 +17,29 @@ class TrafficWatchdog:
         self.is_running = True
         self.defense_mode_active = False
         self.traffic_history = []
+
+        # Registered services for the FinSight workspace
+        self.services = [
+            {"id": "gateway", "name": "FinSight API Gateway", "status": "healthy", "latency": 42},
+            {"id": "mongo", "name": "Primary MongoDB Cluster", "status": "healthy", "latency": 18}
+        ]
+
+        self.incidents = []
+        self.logs = [
+            {
+                "id": "1",
+                "time": time.strftime("%H:%M:%S"),
+                "level": "INFO",
+                "msg": "Traffic Watchdog initialized for FinSight Engine. Autonomous SRE Engine active."
+            }
+        ]
+
         self.latest_metrics = {
-            "cpu_usage": 45.0,
-            "memory_usage": 60.0,
-            "disk_usage": 50.0,
-            "network_throughput": 52.0,
-            "requests_per_second": 3.2
+            "cpu_usage": 45.2,
+            "memory_usage": 62.1,
+            "disk_usage": 51.4,
+            "network_throughput": 58.3,
+            "requests_per_second": 4.1
         }
 
     def generate_telemetry(self):
@@ -36,6 +53,19 @@ class TrafficWatchdog:
         self.latest_metrics = metrics
         return metrics
 
+    def get_telemetry(self):
+        return self.generate_telemetry()
+
+    def get_state(self):
+        return {
+            "metrics": self.generate_telemetry(),
+            "services": self.services,
+            "logs": self.logs,
+            "incidents": self.incidents,
+            "traffic_history": self.traffic_history,
+            "defense_mode_active": self.defense_mode_active
+        }
+
     def poll_once(self):
         try:
             resp = requests.get(self.target_url, timeout=4)
@@ -43,16 +73,24 @@ class TrafficWatchdog:
             if isinstance(data, dict):
                 self.latest_metrics.update(data)
             print(f"[{time.strftime('%H:%M:%S')}] [INFO] Telemetry polled successfully.")
-            return self.latest_metrics
         except Exception:
             telemetry = self.generate_telemetry()
-            print(f"[{time.strftime('%H:%M:%S')}] [INFO] Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s | CPU: {telemetry['cpu_usage']}%")
-            return telemetry
+            timestamp = time.strftime('%H:%M:%S')
+            print(f"[{timestamp}] [INFO] Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s | CPU: {telemetry['cpu_usage']}%")
+            
+            if len(self.logs) > 50:
+                self.logs.pop(0)
+            self.logs.append({
+                "id": str(time.time()),
+                "time": timestamp,
+                "level": "INFO",
+                "msg": f"Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s"
+            })
+        return self.latest_metrics
 
     async def start_monitoring(self, service_name="FinSight Engine", *args, **kwargs):
         self.is_running = True
         print(f"[INFO] Sentinel SRE Engine starting for {service_name}. Target Endpoint: {self.target_url}")
-        print("[INFO] Traffic watchdog initialized for FinSight Engine. Autonomous SRE Engine active.")
         while self.is_running:
             self.poll_once()
             await asyncio.sleep(2)
