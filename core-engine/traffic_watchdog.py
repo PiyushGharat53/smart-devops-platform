@@ -4,6 +4,7 @@ import signal
 import sys
 import random
 import requests
+import asyncio
 
 RAW_URL = os.getenv("FINSIGHT_API_URL") or os.getenv("BACKEND_URL") or "https://finsight-frontend-qewf.onrender.com"
 METRICS_URL = RAW_URL.rstrip('/') + "/metrics" if not RAW_URL.endswith('/metrics') else RAW_URL
@@ -13,7 +14,7 @@ class TrafficWatchdog:
         self.target_url = target_url or METRICS_URL
         self.dispatch_alert_cb = dispatch_alert_cb
         self.resolve_incident_cb = resolve_incident_cb
-        self.is_running = False
+        self.is_running = True
         self.defense_mode_active = False
         self.traffic_history = []
         self.latest_metrics = {
@@ -48,13 +49,16 @@ class TrafficWatchdog:
             print(f"[{time.strftime('%H:%M:%S')}] [INFO] Telemetry stream active. RPS: {telemetry['requests_per_second']} req/s | CPU: {telemetry['cpu_usage']}%")
             return telemetry
 
-    def start(self):
+    async def start_monitoring(self, service_name="FinSight Engine", *args, **kwargs):
         self.is_running = True
-        print(f"[INFO] Sentinel SRE Engine starting. Target Endpoint: {self.target_url}")
+        print(f"[INFO] Sentinel SRE Engine starting for {service_name}. Target Endpoint: {self.target_url}")
         print("[INFO] Traffic watchdog initialized for FinSight Engine. Autonomous SRE Engine active.")
         while self.is_running:
             self.poll_once()
-            time.sleep(2)
+            await asyncio.sleep(2)
+
+    def start(self):
+        asyncio.run(self.start_monitoring())
 
     def stop(self):
         self.is_running = False
