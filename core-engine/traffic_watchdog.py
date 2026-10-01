@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # Resolves backend URL from environment variables with Docker/Local fallbacks
-RAW_URL = os.getenv("FINSIGHT_API_URL") or os.getenv("BACKEND_URL") or "http://localhost:5000"
+RAW_URL = os.getenv("FINSIGHT_API_URL") or os.getenv("BACKEND_URL") or "https://finsight-frontend-qewf.onrender.com"
 FINSIGHT_API_URL = RAW_URL.rstrip("/")
 if FINSIGHT_API_URL.endswith("/metrics"):
     FINSIGHT_API_URL = FINSIGHT_API_URL[:-8].rstrip("/")
