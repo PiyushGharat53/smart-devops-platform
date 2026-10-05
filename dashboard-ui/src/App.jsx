@@ -6,7 +6,7 @@ import {
   Cpu, MemoryStick, HardDrive, Wifi, Zap, Loader2, CheckCircle2,
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
   CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck, Send, FileCode,
-  Flame, BellRing, Settings, RefreshCw, Check, ShieldAlert, ShieldCheck, Mail, UserX, ExternalLink, HelpCircle
+  Flame, BellRing, Settings, RefreshCw, Check, ShieldAlert, ShieldCheck, Mail, UserX, ExternalLink, HelpCircle, Ban
 } from "lucide-react";
 import LiveTrafficChart from "./components/LiveTrafficChart";
 
@@ -297,22 +297,36 @@ export default function App() {
   const [isSimulating, setIsSimulating] = useState(false);
 
   // Active Defense IP Quarantine Jail & Threat Mitigation State
+  const [clientIp, setClientIp] = useState("115.99.142.68");
+  const [recipientEmail, setRecipientEmail] = useState("secops-incident-team@finsight.io");
+  const [savingRecipientEmail, setSavingRecipientEmail] = useState(false);
+  const [dispatchingIps, setDispatchingIps] = useState({});
+  const [dispatchedIps, setDispatchedIps] = useState({});
+  const [policyUpdatingIps, setPolicyUpdatingIps] = useState({});
+
+  // Manual IP block state
+  const [manualBlockIp, setManualBlockIp] = useState("");
+  const [manualBlockPolicy, setManualBlockPolicy] = useState("5m");
+  const [manualBlockReason, setManualBlockReason] = useState("Volumetric Surge Violation");
+  const [isEnforcingBlock, setIsEnforcingBlock] = useState(false);
+  const [showManualBlockPanel, setShowManualBlockPanel] = useState(false);
+
   const [jailedIps, setJailedIps] = useState([
     {
-      ip: "198.51.100.84",
+      ip: "115.99.142.68",
       threat_level: "CRITICAL",
       incident_id: "INC-2085",
-      reason: "Volumetric traffic burst (14.8 req/s) exceeding threshold (8.0 req/s)",
+      reason: "Volumetric traffic burst exceeding threshold (8.0 req/s)",
       jailed_at: "21:50:40",
       status: "RELEASED (Self-Healed)",
+      policy: "RELEASED",
       requests_blocked: 28,
       action_taken: "Direct HTTP 429 Security Challenge Dispatched",
-      "auto_release_in": "Remediated"
+      auto_release_in: "Remediated"
     }
   ]);
   const [showThreatMatrixModal, setShowThreatMatrixModal] = useState(false);
   const [inspectingChallenge, setInspectingChallenge] = useState(null);
-  const [dispatchingEmail, setDispatchingEmail] = useState(false);
   const [emailSuccessMsg, setEmailSuccessMsg] = useState("");
 
   // MongoDB Atlas Persistence & 30-Day TTL State
@@ -448,6 +462,21 @@ export default function App() {
     };
   }, []);
 
+  // Fetch caller's real client IP & current SecOps recipient email on mount
+  useEffect(() => {
+    axios.get(`${BACKEND_HTTP_URL}/api/security/my-ip`)
+      .then((res) => {
+        if (res.data?.ip) setClientIp(res.data.ip);
+      })
+      .catch(() => {});
+
+    axios.get(`${BACKEND_HTTP_URL}/api/security/recipient-email`)
+      .then((res) => {
+        if (res.data?.recipient_email) setRecipientEmail(res.data.recipient_email);
+      })
+      .catch(() => {});
+  }, []);
+
   // ACTION: Auto-Heal Service
   const healService = useCallback(async (id) => {
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: "healing" } : s)));
@@ -473,13 +502,14 @@ export default function App() {
     }
   }, [activeWorkspace]);
 
-  // ACTION: Simulate Spike (14.5 RPS)
+  // ACTION: Simulate Spike (14.5 RPS) using consistent computer client IP
   const handleSimulateSpike = async () => {
     setIsSimulating(true);
     try {
       await axios.post(`${BACKEND_HTTP_URL}/api/traffic/simulate-surge`, {
         rps: 14.8,
-        duration: 3
+        duration: 3,
+        client_ip: clientIp
       });
     } catch (err) {
       console.error("Simulate spike error", err);
@@ -488,15 +518,101 @@ export default function App() {
     }
   };
 
-  // ACTION: Real HTTP Burst Test (25 requests to FinSight)
+  // ACTION: Real HTTP Burst Test (25 requests to FinSight) using consistent computer client IP
   const handleRealBurst = async () => {
     setIsSimulating(true);
     try {
-      await axios.post(`${BACKEND_HTTP_URL}/api/traffic/real-burst`);
+      await axios.post(`${BACKEND_HTTP_URL}/api/traffic/real-burst`, {
+        client_ip: clientIp
+      });
     } catch (err) {
       console.error("Real burst error", err);
     } finally {
       setTimeout(() => setIsSimulating(false), 1500);
+    }
+  };
+
+  // ACTION: Technical Team Duration Policy Decision (5m, 1h, Permanent Ban, Release)
+  const handleSetIpPolicy = async (ip, policy, reason = "Manual SRE Security Policy Enforcement") => {
+    setPolicyUpdatingIps((prev) => ({ ...prev, [ip]: true }));
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/set-ip-policy`, {
+        ip,
+        policy,
+        reason
+      });
+      if (res.data?.entry) {
+        setJailedIps((prev) => {
+          const exists = prev.some((j) => j.ip === ip);
+          if (exists) {
+            return prev.map((j) => (j.ip === ip ? res.data.entry : j));
+          }
+          return [res.data.entry, ...prev];
+        });
+      }
+      setEmailSuccessMsg(`🛡️ Firewall rule updated for ${ip}: ${policy.toUpperCase()}`);
+      setTimeout(() => setEmailSuccessMsg(""), 3500);
+    } catch (err) {
+      console.error("Failed to set IP policy", err);
+    } finally {
+      setPolicyUpdatingIps((prev) => ({ ...prev, [ip]: false }));
+    }
+  };
+
+  // ACTION: Manually Quarantine a specific IP
+  const handleManualBlockIp = async (e) => {
+    if (e) e.preventDefault();
+    const targetIp = manualBlockIp.trim();
+    if (!targetIp) return;
+    setIsEnforcingBlock(true);
+    try {
+      await handleSetIpPolicy(targetIp, manualBlockPolicy, manualBlockReason);
+      setManualBlockIp("");
+      setShowManualBlockPanel(false);
+    } finally {
+      setIsEnforcingBlock(false);
+    }
+  };
+
+  // ACTION: Save Recipient Email in Real-Time
+  const handleSaveRecipientEmail = async () => {
+    if (!recipientEmail.trim() || !recipientEmail.includes("@")) return;
+    setSavingRecipientEmail(true);
+    try {
+      await axios.post(`${BACKEND_HTTP_URL}/api/security/update-recipient-email`, {
+        email: recipientEmail.trim()
+      });
+      setEmailSuccessMsg(`✅ SecOps alert recipient updated to ${recipientEmail}`);
+      setTimeout(() => setEmailSuccessMsg(""), 4000);
+    } catch (err) {
+      setEmailSuccessMsg("⚠️ Failed to update recipient email");
+      setTimeout(() => setEmailSuccessMsg(""), 3000);
+    } finally {
+      setSavingRecipientEmail(false);
+    }
+  };
+
+  // ACTION: Dispatch SecOps Alert Email (Isolated state per row)
+  const handleDispatchSecOpsEmail = async (entry) => {
+    const targetIp = entry.ip;
+    setDispatchingIps((prev) => ({ ...prev, [targetIp]: true }));
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/dispatch-abuse-email`, {
+        ip: targetIp,
+        incident_id: entry.incident_id,
+        recipient: recipientEmail,
+        reason: entry.reason,
+        policy: entry.policy || entry.status
+      });
+      setDispatchedIps((prev) => ({ ...prev, [targetIp]: true }));
+      const note = res.data?.status_detail || `Sent to ${recipientEmail}`;
+      setEmailSuccessMsg(`✅ SecOps abuse notice transmitted: ${note}`);
+      setTimeout(() => setEmailSuccessMsg(""), 4500);
+    } catch (_) {
+      setEmailSuccessMsg("⚠️ SecOps alert logged to audit trail & MongoDB.");
+      setTimeout(() => setEmailSuccessMsg(""), 3500);
+    } finally {
+      setDispatchingIps((prev) => ({ ...prev, [targetIp]: false }));
     }
   };
 
@@ -809,13 +925,14 @@ export default function App() {
 
         {/* 2 & 5. ACTIVE DEFENSE IP QUARANTINE JAIL & ROGUE TRAFFIC RESPONSE */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Header & Global Actions */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
             <div>
               <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
                 <ShieldAlert size={16} color="#ef4444" /> Active Defense IP Quarantine Jail &amp; Rogue Client Response
               </h2>
               <p style={{ fontSize: 11.5, color: "#94a3b8", margin: "3px 0 0 0" }}>
-                Autonomous Heuristic Quarantine &middot; Direct HTTP 429 Challenge Delivery &middot; Upstream Abuse Telemetry
+                Autonomous Heuristic Quarantine &middot; SRE Duration Control &middot; Direct HTTP 429 Challenge &middot; Automated SecOps Dispatch
               </p>
             </div>
 
@@ -825,6 +942,42 @@ export default function App() {
                   {emailSuccessMsg}
                 </span>
               )}
+
+              {/* View what the attacker sees */}
+              <a
+                href={`${BACKEND_HTTP_URL}/challenge?ip=${encodeURIComponent(clientIp || "115.99.142.68")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sso-btn"
+                title="Open the real HTTP 429 Security Challenge page shown to an attacking client terminal"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "0.4rem 0.8rem",
+                  borderRadius: 10, fontSize: 12, border: "1px solid rgba(139,92,246,0.35)",
+                  background: "rgba(139,92,246,0.12)", color: "#c4b5fd", textDecoration: "none"
+                }}
+              >
+                <ExternalLink size={13} color="#c4b5fd" />
+                <span>Attacker 429 Screen</span>
+              </a>
+
+              {/* Toggle Manual IP Block Form */}
+              <button
+                onClick={() => setShowManualBlockPanel(!showManualBlockPanel)}
+                className="sso-btn"
+                title="Manually quarantine an IP address with customized duration"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "0.4rem 0.8rem",
+                  borderRadius: 10, fontSize: 12,
+                  border: showManualBlockPanel ? "1px solid rgba(239,68,68,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                  background: showManualBlockPanel ? "rgba(239,68,68,0.18)" : "rgba(255,255,255,0.05)",
+                  color: showManualBlockPanel ? "#fca5a5" : "#e2e8f0"
+                }}
+              >
+                <Ban size={13} color={showManualBlockPanel ? "#ef4444" : "#cbd5e1"} />
+                <span>{showManualBlockPanel ? "Close Block Tool" : "➕ Manual IP Block"}</span>
+              </button>
+
+              {/* Threat Decision Matrix Modal Trigger */}
               <button
                 onClick={() => setShowThreatMatrixModal(true)}
                 className="sso-btn"
@@ -836,131 +989,279 @@ export default function App() {
                 }}
               >
                 <ShieldCheck size={13} color="#38bdf8" />
-                <span>Threat Decision Matrix</span>
+                <span>Threat Matrix</span>
               </button>
             </div>
           </div>
 
+          {/* SecOps Recipient Email Setting Bar */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10,
+            padding: "0.6rem 0.9rem", borderRadius: 8, background: "rgba(255,255,255,0.02)",
+            border: "1px solid rgba(255,255,255,0.06)", fontSize: 12
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 260 }}>
+              <Mail size={14} color="#f59e0b" />
+              <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>SecOps Incident Recipient:</span>
+              <input
+                type="email"
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                placeholder="technical-team@finsight.io"
+                style={{
+                  flex: 1, minWidth: 180, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: 6, padding: "0.3rem 0.6rem", color: "#f8fafc", fontSize: 12, fontFamily: "monospace"
+                }}
+              />
+              <button
+                onClick={handleSaveRecipientEmail}
+                disabled={savingRecipientEmail}
+                className="sso-btn"
+                title="Save alert recipient email to backend"
+                style={{
+                  display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.65rem",
+                  borderRadius: 6, fontSize: 11.5, background: "rgba(245,158,11,0.15)",
+                  border: "1px solid rgba(245,158,11,0.4)", color: "#fde68a"
+                }}
+              >
+                {savingRecipientEmail ? <Loader2 size={11} className="sso-spin" /> : <Check size={11} color="#f59e0b" />}
+                <span>Save</span>
+              </button>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{
+                fontSize: 10.5, padding: "2px 8px", borderRadius: 9999, fontWeight: 600,
+                background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.3)"
+              }}>
+                Auto-Dispatch: ON
+              </span>
+              <button
+                onClick={() => handleDispatchSecOpsEmail({
+                  ip: clientIp || "115.99.142.68",
+                  incident_id: "TEST-ALERT",
+                  reason: "Live SRE Manual Verification Probe",
+                  status: "VERIFIED"
+                })}
+                className="sso-btn"
+                style={{
+                  fontSize: 11, padding: "0.3rem 0.65rem", borderRadius: 6,
+                  background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#e2e8f0"
+                }}
+              >
+                Send Test Alert
+              </button>
+            </div>
+          </div>
+
+          {/* Collapsible Manual IP Block Form */}
+          {showManualBlockPanel && (
+            <form onSubmit={handleManualBlockIp} style={{
+              display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+              padding: "0.85rem 1rem", borderRadius: 10, background: "rgba(239, 68, 68, 0.06)",
+              border: "1px solid rgba(239, 68, 68, 0.25)"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 200 }}>
+                <Ban size={14} color="#ef4444" />
+                <input
+                  type="text"
+                  placeholder="Target IP (e.g. 192.168.1.50)"
+                  value={manualBlockIp}
+                  onChange={(e) => setManualBlockIp(e.target.value)}
+                  style={{
+                    flex: 1, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 6, padding: "0.35rem 0.65rem", color: "#f8fafc", fontSize: 12, fontFamily: "monospace"
+                  }}
+                />
+                {clientIp && (
+                  <button
+                    type="button"
+                    onClick={() => setManualBlockIp(clientIp)}
+                    className="sso-btn"
+                    title={`Fill with your computer's public IP (${clientIp})`}
+                    style={{
+                      fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
+                      background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.3)", color: "#7dd3fc"
+                    }}
+                  >
+                    📍 My IP ({clientIp})
+                  </button>
+                )}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, color: "#94a3b8" }}>Duration:</span>
+                <select
+                  value={manualBlockPolicy}
+                  onChange={(e) => setManualBlockPolicy(e.target.value)}
+                  style={{
+                    background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.15)",
+                    borderRadius: 6, padding: "0.35rem 0.65rem", color: "#f8fafc", fontSize: 12
+                  }}
+                >
+                  <option value="5m">⏱️ Block 5 Minutes</option>
+                  <option value="1h">🕒 Block 1 Hour</option>
+                  <option value="permanent">🚫 Permanent Ban</option>
+                </select>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isEnforcingBlock || !manualBlockIp.trim()}
+                className="sso-btn"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "0.35rem 0.85rem",
+                  borderRadius: 6, fontSize: 12, background: "rgba(239,68,68,0.25)",
+                  border: "1px solid rgba(239,68,68,0.6)", color: "#fca5a5", fontWeight: 600
+                }}
+              >
+                {isEnforcingBlock ? <Loader2 size={13} className="sso-spin" /> : <ShieldAlert size={13} color="#ef4444" />}
+                <span>Enforce Quarantine</span>
+              </button>
+            </form>
+          )}
+
+          {/* Quarantined & Monitored IPs List */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {jailedIps.length === 0 ? (
               <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>No rogue IPs quarantined. Active defense shield standing by.</p>
             ) : (
-              jailedIps.slice(0, 5).map((entry) => {
-                const isQuarantined = entry.status === "QUARANTINED";
+              jailedIps.slice(0, 6).map((entry) => {
+                const isPermanent = entry.policy === "PERMANENT" || entry.status?.includes("BANNED");
+                const is1Hour = entry.policy === "1_HOUR" || entry.status?.includes("1 Hour");
+                const is5Min = entry.policy === "5_MINUTES" || entry.status?.includes("5 Mins");
+                const isAutoJail = entry.status === "QUARANTINED" && !isPermanent && !is1Hour && !is5Min;
+                const isReleased = entry.status?.includes("RELEASED") || entry.policy === "RELEASED";
+
+                const isRowDispatching = !!dispatchingIps[entry.ip];
+                const isRowDispatched = !!dispatchedIps[entry.ip];
+                const isPolicyUpdating = !!policyUpdatingIps[entry.ip];
+
                 return (
                   <div
                     key={`${entry.ip}-${entry.jailed_at}`}
                     style={{
                       display: "flex", justifyContent: "space-between", alignItems: "center",
                       padding: "0.85rem 1rem", borderRadius: 10, flexWrap: "wrap", gap: 10,
-                      background: isQuarantined ? "rgba(239, 68, 68, 0.08)" : "rgba(255,255,255,0.02)",
-                      border: isQuarantined ? "1px solid rgba(239, 68, 68, 0.3)" : "1px solid rgba(255,255,255,0.05)"
+                      background: isPermanent ? "rgba(239, 68, 68, 0.12)" : (is1Hour || is5Min) ? "rgba(245, 158, 11, 0.08)" : isAutoJail ? "rgba(168, 85, 247, 0.08)" : "rgba(255,255,255,0.02)",
+                      border: isPermanent ? "1px solid rgba(239, 68, 68, 0.45)" : (is1Hour || is5Min) ? "1px solid rgba(245, 158, 11, 0.35)" : isAutoJail ? "1px solid rgba(168, 85, 247, 0.35)" : "1px solid rgba(255,255,255,0.05)"
                     }}
                   >
+                    {/* Left details */}
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                       <span style={{
-                        fontSize: 10.5, fontWeight: 700, padding: "3px 8px", borderRadius: 9999,
-                        color: isQuarantined ? "#fca5a5" : "#86efac",
-                        backgroundColor: isQuarantined ? "rgba(239,68,68,0.2)" : "rgba(34,197,94,0.15)"
+                        fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 9999,
+                        letterSpacing: "0.03em",
+                        color: isPermanent ? "#f87171" : is1Hour ? "#fb923c" : is5Min ? "#fde047" : isAutoJail ? "#c084fc" : "#86efac",
+                        backgroundColor: isPermanent ? "rgba(239,68,68,0.25)" : is1Hour ? "rgba(249,115,22,0.2)" : is5Min ? "rgba(234,179,8,0.2)" : isAutoJail ? "rgba(168,85,247,0.2)" : "rgba(34,197,94,0.15)",
+                        border: isPermanent ? "1px solid rgba(239,68,68,0.5)" : is1Hour ? "1px solid rgba(249,115,22,0.4)" : is5Min ? "1px solid rgba(234,179,8,0.4)" : isAutoJail ? "1px solid rgba(168,85,247,0.4)" : "1px solid rgba(34,197,94,0.3)"
                       }}>
-                        {isQuarantined ? "QUARANTINED" : "RELEASED"}
+                        {isPermanent ? "🚫 PERMANENT BAN" : is1Hour ? "🕒 BLOCKED (1H)" : is5Min ? "⏱️ BLOCKED (5M)" : isAutoJail ? "🛡️ AUTO JAIL (12S)" : "🟢 RELEASED"}
                       </span>
+
                       <div>
                         <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "#f8fafc", fontFamily: "monospace" }}>
                           {entry.ip} <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11.5 }}>· {entry.incident_id}</span>
                         </p>
                         <p style={{ margin: "2px 0 0 0", fontSize: 11.5, color: "#94a3b8" }}>
                           {entry.reason} &middot; <strong style={{ color: "#fca5a5" }}>{entry.requests_blocked || 20} blocked (HTTP 429)</strong>
+                          {entry.auto_release_in && (
+                            <span style={{ color: "#c4b5fd", marginLeft: 6 }}>&middot; {entry.auto_release_in}</span>
+                          )}
                         </p>
                       </div>
                     </div>
 
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <button
-                        onClick={async () => {
-                          try {
-                            const res = await axios.get(`${BACKEND_HTTP_URL}/api/security/inspect-challenge/${encodeURIComponent(entry.ip)}`);
-                            setInspectingChallenge(res.data);
-                          } catch (_) {
-                            setInspectingChallenge({
-                              http_status: 429,
-                              error: "Active Defense: Rate Limit & Volumetric Threshold Exceeded",
-                              client_ip: entry.ip,
-                              threat_level: entry.threat_level || "CRITICAL",
-                              action: "IP Quarantined in Active Defense Jail",
-                              reason: entry.reason,
-                              incident_id: entry.incident_id,
-                              quarantine_expires: "12 seconds (Self-Healing Stabilization)",
-                              remediation: "Traffic must stabilize below 4.0 req/s before automated unjailing.",
-                              support_contact: "security@finsight.com"
-                            });
-                          }
-                        }}
-                        className="sso-btn"
-                        title="View the direct HTTP 429 Challenge Payload delivered to this IP"
-                        style={{
-                          display: "flex", alignItems: "center", gap: 5, padding: "0.35rem 0.75rem",
-                          borderRadius: 8, fontSize: 11.5, border: "1px solid rgba(139,92,246,0.35)",
-                          background: "rgba(139,92,246,0.12)", color: "#c4b5fd"
-                        }}
-                      >
-                        <FileCode size={12} color="#c4b5fd" />
-                        <span>Inspect 429 Challenge</span>
-                      </button>
-
-                      <button
-                        onClick={async () => {
-                          setDispatchingEmail(true);
-                          try {
-                            const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/dispatch-abuse-email`, {
-                              ip: entry.ip,
-                              incident_id: entry.incident_id,
-                              recipient: "secops-incident-team@finsight.io"
-                            });
-                            setEmailSuccessMsg(`✅ SecOps abuse notice transmitted to ${res.data?.dispatched_to || 'SecOps team'}`);
-                            setTimeout(() => setEmailSuccessMsg(""), 4000);
-                          } catch (_) {
-                            setEmailSuccessMsg("⚠️ SecOps alert logged to audit trail.");
-                            setTimeout(() => setEmailSuccessMsg(""), 3500);
-                          } finally {
-                            setDispatchingEmail(false);
-                          }
-                        }}
-                        disabled={dispatchingEmail}
-                        className="sso-btn"
-                        title="Dispatch automated SecOps Incident Notice to security team & ISP abuse desk"
-                        style={{
-                          display: "flex", alignItems: "center", gap: 5, padding: "0.35rem 0.75rem",
-                          borderRadius: 8, fontSize: 11.5, border: "1px solid rgba(245,158,11,0.35)",
-                          background: "rgba(245,158,11,0.12)", color: "#fde68a"
-                        }}
-                      >
-                        {dispatchingEmail ? <Loader2 size={12} className="sso-spin" /> : <Mail size={12} color="#f59e0b" />}
-                        <span>Dispatch SecOps Alert</span>
-                      </button>
-
-                      {isQuarantined && (
+                    {/* Right actions: Duration decisions & Email Dispatch */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      {/* SRE Policy Control Buttons */}
+                      {!isReleased && (
                         <button
-                          onClick={async () => {
-                            try {
-                              await axios.post(`${BACKEND_HTTP_URL}/api/security/release-ip/${encodeURIComponent(entry.ip)}`);
-                              setJailedIps((prev) => prev.map((j) => (j.ip === entry.ip ? { ...j, status: "RELEASED (Manual Override)", auto_release_in: "Released by SRE Engineer" } : j)));
-                            } catch (e) {
-                              console.error("Failed to release IP", e);
-                            }
-                          }}
+                          onClick={() => handleSetIpPolicy(entry.ip, "release")}
+                          disabled={isPolicyUpdating}
                           className="sso-btn"
-                          title="Manually release IP from Active Defense quarantine"
+                          title="Instantly unjail and allow traffic from this IP"
                           style={{
-                            display: "flex", alignItems: "center", gap: 5, padding: "0.35rem 0.75rem",
-                            borderRadius: 8, fontSize: 11.5, border: "1px solid rgba(34,197,94,0.35)",
+                            display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.65rem",
+                            borderRadius: 6, fontSize: 11, border: "1px solid rgba(34,197,94,0.35)",
                             background: "rgba(34,197,94,0.12)", color: "#86efac"
                           }}
                         >
-                          <Unlock size={12} color="#86efac" />
-                          <span>Release IP</span>
+                          <Unlock size={11} color="#86efac" />
+                          <span>Release</span>
                         </button>
                       )}
+
+                      <button
+                        onClick={() => handleSetIpPolicy(entry.ip, "5m")}
+                        disabled={isPolicyUpdating || is5Min}
+                        className="sso-btn"
+                        title="Enforce 5-minute quarantine"
+                        style={{
+                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.6rem",
+                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(234,179,8,0.35)",
+                          background: is5Min ? "rgba(234,179,8,0.25)" : "rgba(234,179,8,0.08)",
+                          color: "#fde047"
+                        }}
+                      >
+                        <Clock size={11} color="#fde047" />
+                        <span>5m</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleSetIpPolicy(entry.ip, "1h")}
+                        disabled={isPolicyUpdating || is1Hour}
+                        className="sso-btn"
+                        title="Enforce 1-hour quarantine"
+                        style={{
+                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.6rem",
+                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(249,115,22,0.35)",
+                          background: is1Hour ? "rgba(249,115,22,0.25)" : "rgba(249,115,22,0.08)",
+                          color: "#fb923c"
+                        }}
+                      >
+                        <Clock size={11} color="#fb923c" />
+                        <span>1h</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleSetIpPolicy(entry.ip, "permanent")}
+                        disabled={isPolicyUpdating || isPermanent}
+                        className="sso-btn"
+                        title="Permanently ban this IP address"
+                        style={{
+                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.6rem",
+                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(239,68,68,0.45)",
+                          background: isPermanent ? "rgba(239,68,68,0.3)" : "rgba(239,68,68,0.1)",
+                          color: "#fca5a5"
+                        }}
+                      >
+                        <Ban size={11} color="#ef4444" />
+                        <span>Ban</span>
+                      </button>
+
+                      {/* Independent per-row Dispatch SecOps Alert */}
+                      <button
+                        onClick={() => handleDispatchSecOpsEmail(entry)}
+                        disabled={isRowDispatching}
+                        className="sso-btn"
+                        title="Dispatch automated SecOps Incident Notice to technical team & ISP abuse desk"
+                        style={{
+                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.7rem",
+                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(245,158,11,0.35)",
+                          background: isRowDispatched ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.12)",
+                          color: isRowDispatched ? "#86efac" : "#fde68a"
+                        }}
+                      >
+                        {isRowDispatching ? (
+                          <Loader2 size={11} className="sso-spin" />
+                        ) : isRowDispatched ? (
+                          <CheckCircle2 size={11} color="#86efac" />
+                        ) : (
+                          <Mail size={11} color="#f59e0b" />
+                        )}
+                        <span>{isRowDispatched ? "Dispatched" : "Dispatch Alert"}</span>
+                      </button>
                     </div>
                   </div>
                 );

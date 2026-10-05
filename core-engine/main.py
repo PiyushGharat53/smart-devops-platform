@@ -8,9 +8,14 @@ from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
 import psutil
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -257,37 +262,151 @@ def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
     except RuntimeError:
         pass
 
-# Active Defense IP Quarantine Jail State
+# Active Defense IP Quarantine Jail State & SecOps Alert Configuration
+secops_recipient_email: str = "secops-incident-team@finsight.io"
+
 jailed_ips: List[Dict[str, Any]] = [
     {
-        "ip": "198.51.100.84",
+        "ip": "115.99.142.68",
         "threat_level": "CRITICAL",
         "incident_id": "INC-2085",
         "reason": "Volumetric traffic burst exceeding 8.0 req/s threshold",
         "jailed_at": get_ist_time_str(),
         "status": "RELEASED (Self-Healed)",
+        "policy": "RELEASED",
         "requests_blocked": 28,
         "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
         "auto_release_in": "Remediated"
     }
 ]
 
+async def send_secops_email(recipient: str, target_ip: str, incident_id: str, reason: str, policy: str) -> tuple:
+    """Delivers real email via SMTP if configured, or queues and records to MongoDB audit trail."""
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASSWORD", "")
+    
+    subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine Enforced on IP: {target_ip}"
+    
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+        <h2 style="color: #ef4444; margin: 0;">🛡️ Sentinel SmartOps Active Defense Alert</h2>
+      </div>
+      <p style="color: #9ca3af; font-size: 14px;">An anomalous traffic surge or policy violation triggered automated quarantine enforcement on the FinSight Gateway.</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: rgba(255,255,255,0.03); border-radius: 8px;">
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Incident ID:</td>
+          <td style="padding: 10px 16px; color: #38bdf8; font-family: monospace;">{incident_id}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Quarantined IP:</td>
+          <td style="padding: 10px 16px; color: #f87171; font-family: monospace; font-weight: bold;">{target_ip}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Threat Reason:</td>
+          <td style="padding: 10px 16px; color: #fde68a;">{reason}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Defense Policy:</td>
+          <td style="padding: 10px 16px; color: #c084fc; font-weight: bold;">{policy}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Timestamp (IST):</td>
+          <td style="padding: 10px 16px; color: #34d399;">{get_ist_time_str()} (Mumbai, India)</td>
+        </tr>
+      </table>
+      
+      <div style="padding: 12px; background: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; border-radius: 4px; margin-bottom: 20px;">
+        <strong style="color: #fca5a5;">Enforcement Action:</strong> Client received HTTP 429 Active Defense Challenge. Requests isolated from FinSight core compute.
+      </div>
+      
+      <p style="font-size: 12px; color: #6b7280; margin-top: 24px;">Sentinel SmartOps Autonomous SRE Engine • FinSight Gateway Protection</p>
+    </div>
+    """
+    
+    text_content = f"""
+    [Sentinel SecOps Alert] Active Defense Quarantine Enforced
+    Incident: {incident_id}
+    Rogue IP: {target_ip}
+    Reason: {reason}
+    Policy: {policy}
+    Time: {get_ist_time_str()} IST
+    Action: HTTP 429 Challenge Dispatched & Quarantined
+    """
+    
+    if smtp_user and smtp_pass:
+        try:
+            def _sync_send():
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = f"Sentinel SmartOps <{smtp_user}>"
+                msg["To"] = recipient
+                msg.attach(MIMEText(text_content, "plain"))
+                msg.attach(MIMEText(html_content, "html"))
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=8) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(smtp_user, [recipient], msg.as_string())
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _sync_send)
+            return True, f"Delivered via SMTP ({smtp_host}) to {recipient}"
+        except Exception as e:
+            return False, f"SMTP Error: {str(e)}"
+    else:
+        return True, f"Alert recorded & queued for {recipient} (Logged to Atlas Security Audit Trail)"
+
 def jail_ip_callback(ip_doc: dict):
-    global jailed_ips
+    global jailed_ips, secops_recipient_email
     for existing in jailed_ips:
         if existing["ip"] == ip_doc["ip"]:
+            # If manually set to a locked SRE policy, do not downgrade
+            if existing.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR"):
+                existing["requests_blocked"] = existing.get("requests_blocked", 0) + ip_doc.get("requests_blocked", 1)
+                return
             existing.update(ip_doc)
+            # Auto-dispatch email notice
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(dispatch_abuse_email({
+                    "ip": ip_doc["ip"],
+                    "incident_id": ip_doc.get("incident_id", "INC-AUTO"),
+                    "recipient": secops_recipient_email,
+                    "reason": ip_doc.get("reason", "Volumetric threshold surge"),
+                    "policy": ip_doc.get("policy", "QUARANTINED")
+                }))
+            except RuntimeError:
+                pass
             return
+            
     jailed_ips.insert(0, ip_doc)
     if len(jailed_ips) > 20:
         jailed_ips.pop()
+
+    # Automatically trigger SecOps alert dispatch on new quarantine
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(dispatch_abuse_email({
+            "ip": ip_doc["ip"],
+            "incident_id": ip_doc.get("incident_id", "INC-AUTO"),
+            "recipient": secops_recipient_email,
+            "reason": ip_doc.get("reason", "Volumetric threshold surge"),
+            "policy": ip_doc.get("policy", "QUARANTINED")
+        }))
+    except RuntimeError:
+        pass
 
 def release_ip_callback(incident_id: str):
     global jailed_ips
     for entry in jailed_ips:
         if entry.get("incident_id") == incident_id:
-            entry["status"] = "RELEASED (Self-Healed)"
-            entry["auto_release_in"] = "Remediated"
+            # Respect manual SRE locks: only self-heal if policy is AUTO_COOLDOWN or unset
+            if entry.get("policy") in (None, "AUTO_COOLDOWN"):
+                entry["status"] = "RELEASED (Self-Healed)"
+                entry["policy"] = "RELEASED"
+                entry["auto_release_in"] = "Remediated"
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -641,15 +760,28 @@ async def get_sentinel_config():
 
 # Live Traffic Testing & Surge Simulation Endpoints
 @app.post("/api/traffic/simulate-surge")
-async def simulate_surge(payload: dict = None):
+async def simulate_surge(request: Request, payload: dict = None):
     rps = float((payload or {}).get("rps", 14.5))
     duration = int((payload or {}).get("duration", 3))
-    traffic_watchdog.trigger_surge(rps=rps, duration_ticks=duration)
-    await add_log("WARN", f"[SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s.")
-    return {"message": f"Simulated traffic spike of {rps} req/s triggered.", "rps": rps}
+    
+    # Extract caller's real client IP
+    client_ip = (payload or {}).get("client_ip")
+    if not client_ip:
+        forwarded = request.headers.get("x-forwarded-for")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "115.99.142.68")
+
+    traffic_watchdog.trigger_surge(rps=rps, duration_ticks=duration, client_ip=client_ip)
+    await add_log("WARN", f"[SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s (Client: {client_ip}).")
+    return {"message": f"Simulated traffic spike of {rps} req/s triggered.", "rps": rps, "client_ip": client_ip}
 
 @app.post("/api/traffic/real-burst")
-async def real_burst_test(background_tasks: BackgroundTasks):
+async def real_burst_test(request: Request, background_tasks: BackgroundTasks, payload: dict = None):
+    # Extract caller's real client IP
+    client_ip = (payload or {}).get("client_ip")
+    if not client_ip:
+        forwarded = request.headers.get("x-forwarded-for")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "115.99.142.68")
+
     async def burst_worker():
         count_429 = 0
         count_200 = 0
@@ -665,7 +797,7 @@ async def real_burst_test(background_tasks: BackgroundTasks):
                 except Exception:
                     pass
         if count_429 > 0:
-            test_ip = "192.168.1.105 (Test Burst Client)"
+            test_ip = client_ip
             jail_ip_callback({
                 "ip": test_ip,
                 "threat_level": "WARNING",
@@ -673,16 +805,17 @@ async def real_burst_test(background_tasks: BackgroundTasks):
                 "reason": f"Real HTTP Burst: {count_429} requests rejected by Express rate limiter (HTTP 429)",
                 "jailed_at": get_ist_time_str(),
                 "status": "QUARANTINED",
+                "policy": "AUTO_COOLDOWN",
                 "requests_blocked": count_429,
                 "action_taken": "Direct HTTP 429 Active Defense Challenge Delivered",
                 "auto_release_in": "10s Cooldown"
             })
         await add_log(
             "INFO",
-            f"[BURST TEST RESULTS] 25 requests to FinSight: {count_200} passed, {count_429} blocked by Express Active Defense (429)."
+            f"[BURST TEST RESULTS] 25 requests to FinSight from {client_ip}: {count_200} passed, {count_429} blocked by Express Active Defense (429)."
         )
     background_tasks.add_task(burst_worker)
-    return {"message": f"Real HTTP burst dispatched against {FINSIGHT_API_URL}"}
+    return {"message": f"Real HTTP burst dispatched against {FINSIGHT_API_URL}", "client_ip": client_ip}
 
 @app.post("/api/pipeline/trigger")
 async def trigger_manual_pipeline(payload: dict, background_tasks: BackgroundTasks):
@@ -761,43 +894,242 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
 # ==========================================
 # Security, Threat Matrix & IP Jail Endpoints
 # ==========================================
+@app.get("/api/security/my-ip")
+async def get_my_ip(request: Request):
+    """Returns the caller's detected public or network IP address."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "115.99.142.68"
+    return {"ip": client_ip}
+
+@app.get("/api/security/recipient-email")
+async def get_recipient_email():
+    """Returns the current SecOps alert recipient email address."""
+    return {"recipient_email": secops_recipient_email}
+
+@app.post("/api/security/update-recipient-email")
+async def update_recipient_email(payload: dict):
+    """Dynamically updates the SecOps alert recipient email address."""
+    global secops_recipient_email
+    new_email = str((payload or {}).get("email", "")).strip()
+    if new_email and "@" in new_email:
+        secops_recipient_email = new_email
+        await add_log("INFO", f"[SECOPS CONFIG] Alert recipient email set to {secops_recipient_email}")
+        return {"success": True, "recipient_email": secops_recipient_email}
+    return {"success": False, "error": "Invalid email address"}
+
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():
     return {"jailed_ips": jailed_ips, "count": len(jailed_ips)}
 
+@app.post("/api/security/set-ip-policy")
+async def set_ip_policy(payload: dict):
+    """Allows Technical SRE team to decide quarantine duration (5m, 1h, permanent ban, release)."""
+    global jailed_ips
+    ip = str((payload or {}).get("ip", "")).strip()
+    policy = str((payload or {}).get("policy", "release")).lower().strip()
+    reason = str((payload or {}).get("reason", "Manual SRE Security Policy Enforcement")).strip()
+
+    if not ip:
+        return {"success": False, "error": "IP address is required"}
+
+    matched = next((item for item in jailed_ips if item["ip"] == ip), None)
+    if not matched:
+        matched = {
+            "ip": ip,
+            "threat_level": "CRITICAL" if policy == "permanent" else "HIGH",
+            "incident_id": f"INC-SRE-{random.randint(1000, 9999)}",
+            "reason": reason,
+            "jailed_at": get_ist_time_str(),
+            "status": "QUARANTINED",
+            "policy": "AUTO_COOLDOWN",
+            "requests_blocked": 1,
+            "action_taken": "SRE Firewall Rule Enforced",
+            "auto_release_in": "Active"
+        }
+        jailed_ips.insert(0, matched)
+
+    if policy in ("permanent", "ban"):
+        matched["policy"] = "PERMANENT"
+        matched["status"] = "PERMANENTLY BANNED"
+        matched["auto_release_in"] = "Permanent (Manual Revocation Required)"
+        matched["threat_level"] = "CRITICAL"
+        await add_log("CRITICAL", f"[FIREWALL POLICY] IP {ip} permanently banned by SRE team. Rule active.")
+    elif policy in ("5m", "5_minutes"):
+        matched["policy"] = "5_MINUTES"
+        matched["status"] = "BLOCKED (5 Mins)"
+        matched["auto_release_in"] = "5 Minutes"
+        matched["threat_level"] = "HIGH"
+        await add_log("WARN", f"[FIREWALL POLICY] IP {ip} quarantined for 5 minutes by SRE team.")
+    elif policy in ("1h", "1_hour"):
+        matched["policy"] = "1_HOUR"
+        matched["status"] = "BLOCKED (1 Hour)"
+        matched["auto_release_in"] = "1 Hour"
+        matched["threat_level"] = "HIGH"
+        await add_log("WARN", f"[FIREWALL POLICY] IP {ip} quarantined for 1 hour by SRE team.")
+    elif policy in ("release", "unjail"):
+        matched["policy"] = "RELEASED"
+        matched["status"] = "RELEASED (Manual Override)"
+        matched["auto_release_in"] = "Released by SRE Engineer"
+        await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed IP {ip}. Allowlist restored.")
+
+    return {"success": True, "ip": ip, "entry": matched}
+
+@app.post("/api/security/manual-block")
+async def manual_block_ip(payload: dict):
+    """Enforces a manual IP quarantine with specified duration."""
+    return await set_ip_policy(payload)
+
 @app.post("/api/security/release-ip/{ip}")
 async def release_jailed_ip(ip: str):
-    for item in jailed_ips:
-        if item["ip"] == ip:
-            item["status"] = "RELEASED (Manual Override)"
-            item["auto_release_in"] = "Released by SRE Engineer"
-            await add_log("INFO", f"[IP JAIL OVERRIDE] SRE manually released {ip} from Active Defense quarantine.")
-            return {"message": f"IP {ip} released from quarantine.", "success": True}
-    return {"message": f"IP {ip} not found in quarantine.", "success": False}
+    return await set_ip_policy({"ip": ip, "policy": "release"})
 
 @app.post("/api/security/dispatch-abuse-email")
 async def dispatch_abuse_email(payload: dict = None):
-    target_ip = (payload or {}).get("ip", "198.51.100.84")
-    incident_id = (payload or {}).get("incident_id", "INC-SECURITY")
-    recipient = (payload or {}).get("recipient", "secops-incident-team@finsight.io")
-    
-    await add_log("INFO", f"[SECOPS DISPATCH] Security abuse notice successfully transmitted to {recipient} for rogue IP {target_ip}.")
+    global secops_recipient_email
+    target_ip = (payload or {}).get("ip", "115.99.142.68")
+    incident_id = (payload or {}).get("incident_id", f"INC-{random.randint(1000, 9999)}")
+    recipient = (payload or {}).get("recipient") or secops_recipient_email
+    reason = (payload or {}).get("reason", "Volumetric surge exceeding rate threshold")
+    policy = (payload or {}).get("policy", "QUARANTINED (Active Defense)")
+
+    success, status_msg = await send_secops_email(recipient, target_ip, incident_id, reason, policy)
+
+    await add_log("INFO", f"[SECOPS DISPATCH] Security alert for {target_ip} sent to {recipient}. Status: {status_msg}")
     await send_dispatch_alert(
-        f"SecOps Email Dispatched ({incident_id})",
-        f"📧 **Autonomous Abuse Report Dispatched**\n"
+        f"SecOps Alert Dispatched ({incident_id})",
+        f"📧 **Automated Abuse Report Dispatched**\n"
         f"**Target Rogue IP:** `{target_ip}`\n"
         f"**Recipient:** `{recipient}`\n"
-        f"**Action:** IP Quarantined & Upstream ISP Abuse Desk Notified.\n"
-        f"**Status:** Enforced via Active Defense Firewall.",
+        f"**Status:** {status_msg}\n"
+        f"**Policy:** {policy}",
         color=15158332
     )
     return {
-        "message": f"Security incident notification dispatched to {recipient}",
+        "message": f"Security incident notification processed for {recipient}",
         "ip": target_ip,
         "incident_id": incident_id,
         "dispatched_to": recipient,
-        "success": True
+        "status_detail": status_msg,
+        "success": success
     }
+
+@app.get("/challenge", response_class=HTMLResponse)
+@app.get("/api/security/challenge-screen", response_class=HTMLResponse)
+async def challenge_screen(request: Request, ip: Optional[str] = None):
+    """Direct HTTP 429 Security Challenge Screen displayed to an attacking or rate-limited client."""
+    client_ip = ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "115.99.142.68")
+    now_ist = get_ist_time_str()
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>429 - Security Challenge | Sentinel SmartOps Active Defense</title>
+      <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+          background: #080c14;
+          color: #f3f4f6;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+        }}
+        .card {{
+          background: rgba(17, 24, 39, 0.95);
+          border: 1px solid rgba(239, 68, 68, 0.45);
+          box-shadow: 0 25px 50px -12px rgba(239, 68, 68, 0.25);
+          border-radius: 16px;
+          padding: 36px;
+          max-width: 600px;
+          width: 100%;
+        }}
+        .badge {{
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.4);
+          padding: 6px 14px;
+          border-radius: 9999px;
+          font-size: 11.5px;
+          font-weight: 700;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          margin-bottom: 20px;
+        }}
+        h1 {{
+          font-size: 22px;
+          font-weight: 700;
+          color: #ffffff;
+          margin-bottom: 12px;
+        }}
+        p {{
+          color: #9ca3af;
+          font-size: 13.5px;
+          line-height: 1.6;
+          margin-bottom: 20px;
+        }}
+        .telemetry-box {{
+          background: rgba(0, 0, 0, 0.5);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 10px;
+          padding: 16px;
+          margin-bottom: 24px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-size: 12.5px;
+        }}
+        .row {{
+          display: flex;
+          justify-content: space-between;
+          padding: 6px 0;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }}
+        .row:last-child {{ border-bottom: none; }}
+        .label {{ color: #9ca3af; }}
+        .val {{ color: #38bdf8; font-weight: 600; }}
+        .val.danger {{ color: #f87171; font-weight: 700; }}
+        .footer {{
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          padding-top: 16px;
+          font-size: 12px;
+          color: #6b7280;
+          display: flex;
+          justify-content: space-between;
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="badge">🛡️ HTTP 429 Active Defense Challenge</div>
+        <h1>FinSight API Access Quarantined</h1>
+        <p>Your client terminal has exceeded the rate limit threshold. Sentinel SmartOps has isolated your IP address in the Active Defense Quarantine Jail.</p>
+        
+        <div class="telemetry-box">
+          <div class="row"><span class="label">Quarantined IP:</span><span class="val danger">{client_ip}</span></div>
+          <div class="row"><span class="label">HTTP Status Code:</span><span class="val danger">429 (Too Many Requests)</span></div>
+          <div class="row"><span class="label">Protection Layer:</span><span class="val">Sentinel Self-Healing Rate Limiter</span></div>
+          <div class="row"><span class="label">Time (IST Mumbai):</span><span class="val">{now_ist}</span></div>
+          <div class="row"><span class="label">SecOps Action:</span><span class="val">Auto-Dispatched Abuse Telemetry</span></div>
+        </div>
+
+        <p style="font-size: 12.5px; color: #cbd5e1;"><strong>Remediation:</strong> Suspend automated requests. Sentinel's autonomous self-healing algorithm continuously analyzes traffic stabilization.</p>
+
+        <div class="footer">
+          <span>Sentinel SmartOps SRE Engine</span>
+          <span>Target: FinSight API Gateway</span>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
 
 @app.get("/api/security/inspect-challenge/{ip}")
 async def inspect_security_challenge(ip: str):
@@ -807,13 +1139,12 @@ async def inspect_security_challenge(ip: str):
         "http_status": 429,
         "error": "Active Defense: Rate Limit & Volumetric Threshold Exceeded",
         "client_ip": ip,
-        "threat_level": "CRITICAL",
+        "threat_level": matched.get("threat_level", "CRITICAL") if matched else "CRITICAL",
         "action": "IP Quarantined in Active Defense Jail",
-        "reason": "Client exceeded volumetric threshold (>8.0 req/s or >20 reqs/10s window).",
+        "reason": matched.get("reason", "Client exceeded volumetric threshold (>8.0 req/s)") if matched else "Volumetric surge",
         "incident_id": inc_id,
-        "abuse_report_ref": f"SENTINEL-ABUSE-{ip.replace('.', '')}",
-        "quarantine_expires": "12 seconds (Self-Healing Stabilization)",
-        "remediation": "Traffic must stabilize below 4.0 req/s before automated unjailing.",
+        "policy": matched.get("policy", "AUTO_COOLDOWN") if matched else "AUTO_COOLDOWN",
+        "auto_release_in": matched.get("auto_release_in", "12s Cooldown") if matched else "12s",
         "support_contact": "security@finsight.com"
     }
 

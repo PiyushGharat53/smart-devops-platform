@@ -69,6 +69,9 @@ class TrafficWatchdog:
         self.current_incident_id = None
         self.cooldown_counter = 0
         self.cooldown_target = 6  # 6 ticks * 2s = 12s stabilization window
+        self.last_jailed_ip = None
+        self.current_attacker_ip = "115.99.142.68"
+        self.pending_spike_ip: Optional[str] = None
 
         self.previous_request_count: Optional[int] = None
         self.last_check_time: Optional[datetime] = None
@@ -152,10 +155,13 @@ class TrafficWatchdog:
             except Exception as e:
                 print(f"[WATCHDOG INCIDENT RESOLVE ERROR] {e}")
 
-    def trigger_surge(self, rps: float = 14.5, duration_ticks: int = 3):
+    def trigger_surge(self, rps: float = 14.5, duration_ticks: int = 3, client_ip: Optional[str] = None):
         """Triggers a high-RPS surge for demonstration and evaluation testing."""
         self.simulated_spike_rps = rps
         self.manual_spike_remaining = duration_ticks
+        if client_ip:
+            self.current_attacker_ip = client_ip
+            self.pending_spike_ip = client_ip
 
     def get_current_metrics(self) -> List[Dict[str, Any]]:
         """Returns the list of traffic telemetry data points for WebSocket streaming."""
@@ -293,7 +299,7 @@ class TrafficWatchdog:
                 self.cooldown_counter = 0
                 self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
 
-                rogue_ip = f"198.51.100.{random.randint(18, 240)}"
+                rogue_ip = self.pending_spike_ip or self.current_attacker_ip or "115.99.142.68"
                 self.last_jailed_ip = rogue_ip
                 if self.jail_ip_cb:
                     try:
@@ -304,6 +310,7 @@ class TrafficWatchdog:
                             "reason": f"Volumetric surge ({current_rps:.1f} req/s) exceeding threshold ({self.spike_threshold} req/s)",
                             "jailed_at": current_time_str,
                             "status": "QUARANTINED",
+                            "policy": "AUTO_COOLDOWN",
                             "requests_blocked": random.randint(18, 35),
                             "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
                             "auto_release_in": "12s (Self-Healing Cooldown)"
