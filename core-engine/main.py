@@ -4,7 +4,7 @@ import asyncio
 import random
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
@@ -33,6 +33,17 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # 30-Day TTL in seconds: 30 days * 24 hours * 60 minutes * 60 seconds = 2,592,000s
 RETENTION_PERIOD_SECONDS = 2592000
+
+# Indian Standard Time (Mumbai, India / UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_time_str(dt: Optional[datetime] = None) -> str:
+    """Returns timestamp string in Indian Standard Time (Mumbai, India / UTC+5:30)."""
+    if dt is None:
+        return datetime.now(IST).strftime("%H:%M:%S")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime("%H:%M:%S")
 
 # MongoDB Setup
 db_client: Optional[AsyncIOMotorClient] = None
@@ -75,7 +86,9 @@ async def init_mongodb_ttl():
             db_logs.reverse()
             for l in db_logs:
                 if "createdAt" in l and isinstance(l["createdAt"], datetime):
-                    l["createdAt"] = l["createdAt"].isoformat()
+                    created_dt = l["createdAt"]
+                    l["time"] = get_ist_time_str(created_dt)
+                    l["createdAt"] = created_dt.isoformat()
             live_logs.clear()
             live_logs.extend(db_logs)
 
@@ -85,7 +98,9 @@ async def init_mongodb_ttl():
         if db_inc:
             for inc in db_inc:
                 if "createdAt" in inc and isinstance(inc["createdAt"], datetime):
-                    inc["createdAt"] = inc["createdAt"].isoformat()
+                    created_dt = inc["createdAt"]
+                    inc["time"] = get_ist_time_str(created_dt)
+                    inc["createdAt"] = created_dt.isoformat()
             live_incidents.clear()
             live_incidents.extend(db_inc)
 
@@ -110,7 +125,7 @@ live_logs: List[Dict[str, Any]] = [
         "id": 10001,
         "level": "INFO",
         "msg": "Sentinel SmartOps AIOps Engine initialized. Ready & Listening.",
-        "time": time.strftime("%H:%M:%S")
+        "time": get_ist_time_str()
     }
 ]
 live_incidents: List[Dict[str, Any]] = []
@@ -162,7 +177,7 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
         await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
 
 async def add_log(level: str, msg: str):
-    time_str = time.strftime("%H:%M:%S")
+    time_str = get_ist_time_str()
     now_utc = datetime.now(timezone.utc)
     log_entry = {
         "id": random.randint(10000, 99999),
@@ -331,7 +346,7 @@ async def autonomous_heal(service_id: str, service_name: str):
         "service_id": service_id,
         "title": f"{service_name} Health Self-Healing",
         "status": "Active (Self-Healing...)",
-        "time": time.strftime("%H:%M:%S"),
+        "time": get_ist_time_str(),
         **rca
     }
     create_incident_callback(incident_doc)
@@ -411,7 +426,7 @@ async def run_real_deployment_pipeline(
             incident_id = f"INC-{random.randint(1000, 9999)}"
             incident_doc = {
                 "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
-                "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
+                "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": get_ist_time_str(),
                 "severity": "HIGH", "confidence": 99, "rootCause": error_msg, "remediation": "Auto-rollback complete. Fix syntax locally and push again."
             }
             create_incident_callback(incident_doc)
@@ -445,7 +460,7 @@ async def run_real_deployment_pipeline(
             incident_id = f"INC-{random.randint(1000, 9999)}"
             incident_doc = {
                 "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
-                "title": "Critical Vault Exposure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
+                "title": "Critical Vault Exposure", "status": "Active (Blocked)", "time": get_ist_time_str(),
                 "severity": "CRITICAL", "confidence": 100, "rootCause": error_msg, "remediation": "Pipeline hard-blocked. Revoke exposed secret immediately."
             }
             create_incident_callback(incident_doc)

@@ -4,7 +4,7 @@ import signal
 import sys
 import random
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from collections import deque
 from typing import Optional, Callable, Dict, Any, List
 import httpx
@@ -16,6 +16,13 @@ if FINSIGHT_API_URL.endswith("/metrics"):
     FINSIGHT_API_URL = FINSIGHT_API_URL[:-8].rstrip("/")
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+# Indian Standard Time (Mumbai, India / UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_time_str() -> str:
+    """Returns timestamp string in Indian Standard Time (Mumbai, India / UTC+5:30)."""
+    return datetime.now(IST).strftime("%H:%M:%S")
 
 
 class TrafficWatchdog:
@@ -88,9 +95,9 @@ class TrafficWatchdog:
 
     def _seed_initial_history(self):
         """Seeds smooth baseline points so the dashboard loads beautifully immediately."""
-        now = time.time()
+        now_dt = datetime.now(IST)
         for i in range(12, 0, -1):
-            t = time.strftime("%H:%M:%S", time.localtime(now - i * 2))
+            t = (now_dt - timedelta(seconds=i * 2)).strftime("%H:%M:%S")
             baseline_rps = round(random.uniform(1.8, 3.2), 2)
             self.traffic_history.append({
                 "time": t,
@@ -113,7 +120,7 @@ class TrafficWatchdog:
             except Exception as e:
                 print(f"[WATCHDOG LOG ERROR] {e}")
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] [{level}] {msg}")
+            print(f"[{get_ist_time_str()}] [{level}] {msg}")
 
     async def alert(self, title: str, body: str, color: int = 15158332):
         if self.dispatch_alert_cb:
@@ -159,7 +166,7 @@ class TrafficWatchdog:
         }
 
     async def poll_once(self, client: httpx.AsyncClient, target_service_name: str = "FinSight Engine"):
-        current_time_str = datetime.now().strftime("%H:%M:%S")
+        current_time_str = get_ist_time_str()
         current_time_obj = datetime.now()
 
         current_rps = 0.0

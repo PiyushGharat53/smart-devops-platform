@@ -220,10 +220,43 @@ function ConnectionBadge({ state }) {
   );
 }
 
+// Formats timestamps into Indian Standard Time (Mumbai, India / UTC+5:30)
+function formatISTTime(timeStr, createdAt) {
+  if (createdAt) {
+    try {
+      const d = new Date(createdAt);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        });
+      }
+    } catch (_) {}
+  }
+  return timeStr || "--:--:--";
+}
+
 export default function App() {
   const [workspaces, setWorkspaces] = useState(FALLBACK_WORKSPACES);
   const [workspaceId, setWorkspaceId] = useState(FALLBACK_WORKSPACES[0].id);
   const [autonomous, setAutonomous] = useState(true);
+
+  // Real-Time Mumbai, India (IST) Clock
+  const [currentMumbaiTime, setCurrentMumbaiTime] = useState(() =>
+    new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })
+  );
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentMumbaiTime(
+        new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })
+      );
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // LIVE TELEMETRY STATE
   const [services, setServices] = useState([]);
@@ -501,6 +534,27 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
             <ConnectionBadge state={connectionState} />
 
+            {/* Real-Time Mumbai (IST) Clock */}
+            <div
+              title="Real-Time Clock Synchronized to Indian Standard Time (Mumbai, India / UTC+5:30)"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "0.42rem 0.85rem",
+                borderRadius: 12,
+                fontSize: 12,
+                fontFamily: "ui-monospace, SFMono-Regular, monospace",
+                fontWeight: 500,
+                border: "1px solid rgba(56,189,248,0.35)",
+                background: "rgba(56,189,248,0.08)",
+                color: "#38bdf8"
+              }}
+            >
+              <Clock size={13} color="#38bdf8" />
+              <span>IST {currentMumbaiTime}</span>
+            </div>
+
             {/* MongoDB Atlas Persistence Badge & Modal Trigger */}
             <button
               onClick={() => { setShowMongoModal(true); fetchMongoStatus(); }}
@@ -714,6 +768,18 @@ export default function App() {
               <Terminal size={16} color="#a5b4fc" /> AIOps Execution Log &amp; Audit Trail
             </h2>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div
+                title="Synchronized to Indian Standard Time (Mumbai, India)"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, fontSize: 11,
+                  color: "#38bdf8", background: "rgba(56,189,248,0.1)",
+                  border: "1px solid rgba(56,189,248,0.3)",
+                  padding: "3px 10px", borderRadius: 9999
+                }}
+              >
+                <Clock size={11} color="#38bdf8" />
+                <span>IST (Mumbai)</span>
+              </div>
               <div 
                 onClick={() => { setShowMongoModal(true); fetchMongoStatus(); }}
                 className="sso-btn"
@@ -736,7 +802,7 @@ export default function App() {
             <AnimatePresence initial={false}>
               {logs.map((log) => (
                 <motion.div key={log.id || `${log.time}-${log.msg}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} style={{ display: "flex", gap: 8 }}>
-                  <span style={{ color: "#475569" }}>[{log.time}]</span>
+                  <span style={{ color: "#475569" }}>[{formatISTTime(log.time, log.createdAt)}]</span>
                   <span style={{ fontWeight: 600, color: LOG_LEVEL_META[log.level]?.color || "#ffffff" }}>[{log.level}]</span>
                   <span style={{ color: "#cbd5e1" }}>{log.msg}</span>
                 </motion.div>
@@ -780,7 +846,7 @@ export default function App() {
                       <p style={{ fontSize: 11, color: "#64748b", margin: 0 }}>{inc.service} · ID: {inc.id}</p>
                     </div>
                   </div>
-                  <span style={{ fontSize: 11.5, color: "#64748b", fontFamily: "monospace" }}>{inc.time}</span>
+                  <span style={{ fontSize: 11.5, color: "#64748b", fontFamily: "monospace" }}>{formatISTTime(inc.time, inc.createdAt)}</span>
                 </button>
               );
             })}
@@ -797,7 +863,7 @@ export default function App() {
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
                 <div>
                   <h3 style={{ fontSize: 18, fontWeight: 600, color: "#ffffff", margin: "0" }}>{activeIncident.title || activeIncident.service}</h3>
-                  <p style={{ fontSize: 12, color: "#94a3b8", margin: "2px 0 0 0" }}>{activeIncident.service} · {activeIncident.time} · {activeIncident.id}</p>
+                  <p style={{ fontSize: 12, color: "#94a3b8", margin: "2px 0 0 0" }}>{activeIncident.service} · {formatISTTime(activeIncident.time, activeIncident.createdAt)} · {activeIncident.id}</p>
                 </div>
                 <button onClick={() => setActiveIncident(null)} className="sso-btn" style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", color: "#94a3b8", display: "flex" }}><X size={18} /></button>
               </div>
