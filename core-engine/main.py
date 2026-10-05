@@ -280,8 +280,11 @@ jailed_ips: List[Dict[str, Any]] = [
     }
 ]
 
-# Dynamic SMTP Configuration (Loaded from environment or configured dynamically)
+# Dynamic SMTP & Cloud HTTPS Email Configuration (Resend, Brevo, Gmail SMTP)
 smtp_config: Dict[str, Any] = {
+    "provider": os.getenv("EMAIL_PROVIDER", "auto"),
+    "resend_key": os.getenv("RESEND_API_KEY", ""),
+    "brevo_key": os.getenv("BREVO_API_KEY", ""),
     "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
     "port": int(os.getenv("SMTP_PORT", 587)),
     "user": os.getenv("SMTP_USER", ""),
@@ -289,12 +292,7 @@ smtp_config: Dict[str, Any] = {
 }
 
 async def send_secops_email(recipient: str, target_ip: str, incident_id: str, reason: str, policy: str) -> tuple:
-    """Delivers real email via SMTP if configured, or queues and records to MongoDB audit trail."""
-    smtp_host = smtp_config["host"]
-    smtp_port = smtp_config["port"]
-    smtp_user = smtp_config["user"]
-    smtp_pass = smtp_config["pass"]
-    
+    """Delivers real email via Resend HTTPS API (Port 443) or SMTP, or records to MongoDB audit trail."""
     subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine Enforced on IP: {target_ip}"
     
     html_content = f"""
@@ -344,6 +342,65 @@ async def send_secops_email(recipient: str, target_ip: str, incident_id: str, re
     Time: {get_ist_time_str()} IST
     Action: HTTP 429 Challenge Dispatched & Quarantined
     """
+
+    # 1. First Priority: Resend HTTPS API (Port 443 - 100% works on Render Cloud)
+    if smtp_config.get("resend_key"):
+        try:
+            def _send_resend():
+                import urllib.request
+                req = urllib.request.Request(
+                    "https://api.resend.com/emails",
+                    data=json.dumps({
+                        "from": "Sentinel SmartOps <onboarding@resend.dev>",
+                        "to": [recipient],
+                        "subject": subject,
+                        "html": html_content
+                    }).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {smtp_config['resend_key']}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Sentinel-SmartOps/2.0"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _send_resend)
+            return True, f"Delivered via Resend Cloud API (HTTPS) to {recipient} [ID: {res.get('id', 'ok')}]"
+        except Exception as e:
+            return False, f"Resend API Error: {str(e)}"
+
+    # 2. Second Priority: Brevo HTTPS API (Port 443)
+    if smtp_config.get("brevo_key"):
+        try:
+            def _send_brevo():
+                import urllib.request
+                req = urllib.request.Request(
+                    "https://api.brevo.com/v3/smtp/email",
+                    data=json.dumps({
+                        "sender": {"name": "Sentinel SmartOps", "email": "alerts@sentinelsmartops.io"},
+                        "to": [{"email": recipient}],
+                        "subject": subject,
+                        "htmlContent": html_content
+                    }).encode("utf-8"),
+                    headers={
+                        "api-key": smtp_config["brevo_key"],
+                        "Content-Type": "application/json"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _send_brevo)
+            return True, f"Delivered via Brevo Cloud API (HTTPS) to {recipient}"
+        except Exception as e:
+            return False, f"Brevo API Error: {str(e)}"
+
+    # 3. Third Priority: Standard SMTP (Ports 587/465)
+    smtp_user = smtp_config.get("user")
+    smtp_pass = smtp_config.get("pass")
+    smtp_host = smtp_config.get("host", "smtp.gmail.com")
+    smtp_port = smtp_config.get("port", 587)
     
     if smtp_user and smtp_pass:
         try:
@@ -362,7 +419,10 @@ async def send_secops_email(recipient: str, target_ip: str, incident_id: str, re
             await loop.run_in_executor(None, _sync_send)
             return True, f"Delivered via SMTP ({smtp_host}) to {recipient}"
         except Exception as e:
-            return False, f"SMTP Error: {str(e)}"
+            err_str = str(e)
+            if "Network is unreachable" in err_str or "101" in err_str:
+                return False, "Render Free Cloud blocks raw outbound Port 587. Please use a free Resend API Key (re_...) from resend.com for HTTPS Port 443 delivery."
+            return False, f"SMTP Error: {err_str}"
     else:
         return True, f"Alert recorded & queued for {recipient} (Logged to Atlas Security Audit Trail)"
 
@@ -963,25 +1023,108 @@ async def check_client_status(request: Request):
 
 @app.get("/api/security/smtp-status")
 async def get_smtp_status():
+    has_resend = bool(smtp_config.get("resend_key"))
+    has_brevo = bool(smtp_config.get("brevo_key"))
+    has_smtp = bool(smtp_config.get("user") and smtp_config.get("pass"))
+    
+    provider_name = "Resend Cloud (HTTPS 443)" if has_resend else ("Brevo Cloud (HTTPS 443)" if has_brevo else ("Gmail SMTP (Port 587)" if has_smtp else "Unconfigured"))
+    active_identity = "Resend Live API Key" if has_resend else ("Brevo Live API Key" if has_brevo else (smtp_config.get("user", "") if has_smtp else ""))
+    
     return {
-        "configured": bool(smtp_config["user"] and smtp_config["pass"]),
-        "host": smtp_config["host"],
-        "port": smtp_config["port"],
-        "user": smtp_config["user"]
+        "configured": has_resend or has_brevo or has_smtp,
+        "provider": provider_name,
+        "host": smtp_config.get("host", "api.resend.com" if has_resend else "smtp.gmail.com"),
+        "port": 443 if (has_resend or has_brevo) else smtp_config.get("port", 587),
+        "user": active_identity
     }
 
 @app.post("/api/security/configure-smtp")
 async def configure_smtp(payload: dict):
     global smtp_config
+    api_key = str((payload or {}).get("api_key", "")).strip()
     user = str((payload or {}).get("user", "")).strip()
     password = str((payload or {}).get("password", "")).strip().replace(" ", "")
     host = str((payload or {}).get("host", "smtp.gmail.com")).strip()
     port = int((payload or {}).get("port", 587))
     
+    # Check if user entered an API key directly into the password field (common UX pattern)
+    if not api_key:
+        if password.startswith("re_"):
+            api_key = password
+        elif password.startswith("xkeysib-"):
+            api_key = password
+        elif user.startswith("re_"):
+            api_key = user
+
+    # 1. Handle Resend API Key (re_...)
+    if api_key.startswith("re_"):
+        target_email = user if ("@" in user) else secops_recipient_email
+        try:
+            def _test_resend():
+                import urllib.request
+                test_req = urllib.request.Request(
+                    "https://api.resend.com/emails",
+                    data=json.dumps({
+                        "from": "Sentinel SmartOps <onboarding@resend.dev>",
+                        "to": [target_email],
+                        "subject": "🛡️ Sentinel SmartOps - Resend Cloud Email Verified!",
+                        "html": f"""
+                        <div style="font-family:sans-serif;background:#0b0f19;color:#fff;padding:24px;border-radius:12px;">
+                          <h2 style="color:#22c55e;margin-top:0;">✅ Resend HTTPS Email Dispatch Active</h2>
+                          <p>Sentinel SmartOps Active Defense alert pipeline is now connected via Resend Cloud API (Port 443).</p>
+                          <p style="color:#94a3b8;font-size:12px;">Delivered to: <b>{target_email}</b> | Render Cloud Bypass: SUCCESSFUL</p>
+                        </div>
+                        """
+                    }).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Sentinel-SmartOps/2.0"
+                    }
+                )
+                with urllib.request.urlopen(test_req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _test_resend)
+            smtp_config["resend_key"] = api_key
+            smtp_config["provider"] = "resend"
+            await add_log("INFO", f"[EMAIL CONFIG] Resend API Key verified! Live verification email sent to {target_email}.")
+            return {"success": True, "message": f"Resend API verified! Live test email sent to {target_email}."}
+        except Exception as e:
+            return {"success": False, "error": f"Resend API verification failed: {str(e)}"}
+
+    # 2. Handle Brevo API Key (xkeysib-...)
+    if api_key.startswith("xkeysib-"):
+        target_email = user if ("@" in user) else secops_recipient_email
+        try:
+            def _test_brevo():
+                import urllib.request
+                test_req = urllib.request.Request(
+                    "https://api.brevo.com/v3/smtp/email",
+                    data=json.dumps({
+                        "sender": {"name": "Sentinel SmartOps", "email": "alerts@sentinelsmartops.io"},
+                        "to": [{"email": target_email}],
+                        "subject": "🛡️ Sentinel SmartOps - Brevo Cloud Email Verified!",
+                        "htmlContent": f"<h3>✅ Brevo HTTPS Email Active for {target_email}</h3>"
+                    }).encode("utf-8"),
+                    headers={"api-key": api_key, "Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(test_req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _test_brevo)
+            smtp_config["brevo_key"] = api_key
+            smtp_config["provider"] = "brevo"
+            await add_log("INFO", f"[EMAIL CONFIG] Brevo API Key verified! Live test email sent to {target_email}.")
+            return {"success": True, "message": f"Brevo API verified! Live test email sent to {target_email}."}
+        except Exception as e:
+            return {"success": False, "error": f"Brevo API verification failed: {str(e)}"}
+
+    # 3. Handle Gmail SMTP
     if not user or not password:
-        return {"success": False, "error": "Email username and App Password are required."}
+        return {"success": False, "error": "Email username and App Password (or Resend API Key) are required."}
     
-    # Test connection and send verification email
     try:
         def _test():
             with smtplib.SMTP(host, port, timeout=10) as server:
@@ -1001,11 +1144,18 @@ async def configure_smtp(payload: dict):
         smtp_config["port"] = port
         smtp_config["user"] = user
         smtp_config["pass"] = password
+        smtp_config["provider"] = "smtp"
         
         await add_log("INFO", f"[SMTP CONFIG] SMTP verified successfully for {user}. Live verification email delivered.")
         return {"success": True, "message": f"SMTP verified! Live test email sent to {user}."}
     except Exception as e:
-        return {"success": False, "error": f"SMTP Authentication failed: {str(e)}"}
+        err_msg = str(e)
+        if "Network is unreachable" in err_msg or "101" in err_msg:
+            return {
+                "success": False,
+                "error": "Render Cloud Free Tier blocks outbound SMTP Port 587. Please use a free Resend API Key (starts with re_ from resend.com) which delivers instantly over HTTPS Port 443!"
+            }
+        return {"success": False, "error": f"SMTP Authentication failed: {err_msg}"}
 
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():

@@ -987,23 +987,6 @@ export default function App() {
                 </span>
               )}
 
-              {/* View what the attacker sees */}
-              <a
-                href={`${BACKEND_HTTP_URL}/challenge?ip=${encodeURIComponent(clientIp || "115.99.142.68")}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="sso-btn"
-                title="Open the real HTTP 429 Security Challenge page shown to an attacking client terminal"
-                style={{
-                  display: "flex", alignItems: "center", gap: 5, padding: "0.4rem 0.8rem",
-                  borderRadius: 10, fontSize: 12, border: "1px solid rgba(139,92,246,0.35)",
-                  background: "rgba(139,92,246,0.12)", color: "#c4b5fd", textDecoration: "none"
-                }}
-              >
-                <ExternalLink size={13} color="#c4b5fd" />
-                <span>Attacker 429 Screen</span>
-              </a>
-
               {/* Toggle Manual IP Block Form */}
               <button
                 onClick={() => setShowManualBlockPanel(!showManualBlockPanel)}
@@ -1755,16 +1738,17 @@ export default function App() {
 
               <div style={{ padding: 12, borderRadius: 10, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)" }}>
                 <p style={{ fontSize: 12, color: "#c7d2fe", margin: 0, lineHeight: 1.5 }}>
-                  <strong>How Live Email Delivery Works:</strong> To deliver attack alerts directly into your personal Gmail inbox, enter your Gmail address and a <strong>16-character Google App Password</strong>.
+                  <strong>Live Email Delivery on Render Cloud:</strong> Render's free tier blocks raw SMTP port 587. To deliver alerts into your inbox, you can use a <strong>free Resend Cloud API Key</strong> (uses Port 443 HTTPS) or a <strong>Google App Password</strong>.
                 </p>
-                <p style={{ fontSize: 11.5, color: "#94a3b8", margin: "6px 0 0 0" }}>
-                  Generate it in 30 seconds at: <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: "#38bdf8", textDecoration: "underline" }}>myaccount.google.com/apppasswords</a> (App Name: "Sentinel")
-                </p>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, color: "#94a3b8" }}>
+                  <div>⚡ <b>Recommended:</b> Free Resend Key at <a href="https://resend.com" target="_blank" rel="noopener noreferrer" style={{ color: "#38bdf8", textDecoration: "underline" }}>resend.com</a> (Takes 30s, no credit card) &mdash; paste key starting with <code>re_</code></div>
+                  <div>🔑 <b>Alternative:</b> Google App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: "#38bdf8", textDecoration: "underline" }}>myaccount.google.com/apppasswords</a></div>
+                </div>
               </div>
 
               <form onSubmit={handleConnectSmtp} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div>
-                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>Gmail Address:</label>
+                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>Alert Destination Email (Your Inbox):</label>
                   <input
                     type="email"
                     required
@@ -1779,13 +1763,15 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>16-Letter Google App Password:</label>
+                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>
+                    Resend API Key (<span style="color:#22c55e;">re_...</span>) OR 16-Letter Gmail App Password:
+                  </label>
                   <input
                     type="password"
                     required
                     value={smtpPassInput}
                     onChange={(e) => setSmtpPassInput(e.target.value)}
-                    placeholder="abcd efgh ijkl mnop"
+                    placeholder="re_123abc... OR abcd efgh ijkl mnop"
                     style={{
                       width: "100%", background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.15)",
                       borderRadius: 8, padding: "0.55rem 0.8rem", color: "#f8fafc", fontSize: 13, fontFamily: "monospace"
@@ -1794,7 +1780,7 @@ export default function App() {
                 </div>
 
                 {smtpErrorMsg && (
-                  <p style={{ fontSize: 12, color: "#f87171", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", padding: 8, borderRadius: 6, margin: 0 }}>
+                  <p style={{ fontSize: 12, color: "#f87171", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", padding: 10, borderRadius: 8, margin: 0, lineHeight: 1.4 }}>
                     {smtpErrorMsg}
                   </p>
                 )}
@@ -1819,7 +1805,7 @@ export default function App() {
                     }}
                   >
                     {smtpConnecting ? <Loader2 size={13} className="sso-spin" /> : <CheckCircle2 size={13} color="#818cf8" />}
-                    <span>{smtpConnecting ? "Verifying with Google..." : "Verify & Connect Live Email"}</span>
+                    <span>{smtpConnecting ? "Verifying..." : "Verify & Connect Live Email"}</span>
                   </button>
                 </div>
               </form>
