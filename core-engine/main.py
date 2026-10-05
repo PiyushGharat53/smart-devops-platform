@@ -280,12 +280,20 @@ jailed_ips: List[Dict[str, Any]] = [
     }
 ]
 
+# Dynamic SMTP Configuration (Loaded from environment or configured dynamically)
+smtp_config: Dict[str, Any] = {
+    "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
+    "port": int(os.getenv("SMTP_PORT", 587)),
+    "user": os.getenv("SMTP_USER", ""),
+    "pass": os.getenv("SMTP_PASSWORD", "")
+}
+
 async def send_secops_email(recipient: str, target_ip: str, incident_id: str, reason: str, policy: str) -> tuple:
     """Delivers real email via SMTP if configured, or queues and records to MongoDB audit trail."""
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_pass = os.getenv("SMTP_PASSWORD", "")
+    smtp_host = smtp_config["host"]
+    smtp_port = smtp_config["port"]
+    smtp_user = smtp_config["user"]
+    smtp_pass = smtp_config["pass"]
     
     subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine Enforced on IP: {target_ip}"
     
@@ -919,6 +927,85 @@ async def update_recipient_email(payload: dict):
         await add_log("INFO", f"[SECOPS CONFIG] Alert recipient email set to {secops_recipient_email}")
         return {"success": True, "recipient_email": secops_recipient_email}
     return {"success": False, "error": "Invalid email address"}
+
+@app.get("/api/security/check-ip/{ip}")
+async def check_ip_status(ip: str):
+    """Enables FinSight Gateway / Frontend to check if an IP is currently quarantined or banned."""
+    matched = next((item for item in jailed_ips if item["ip"] == ip), None)
+    if matched:
+        is_blocked = (
+            matched.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR") or
+            matched.get("status") == "QUARANTINED"
+        ) and matched.get("policy") != "RELEASED" and not str(matched.get("status", "")).startswith("RELEASED")
+        
+        return {
+            "ip": ip,
+            "blocked": is_blocked,
+            "status": matched.get("status", "ALLOWED"),
+            "policy": matched.get("policy", "NONE"),
+            "reason": matched.get("reason", "Volumetric violation"),
+            "incident_id": matched.get("incident_id", ""),
+            "challenge_url": f"https://sentinel-aiops-engine.onrender.com/challenge?ip={ip}"
+        }
+    return {
+        "ip": ip,
+        "blocked": False,
+        "status": "ALLOWED",
+        "policy": "NONE"
+    }
+
+@app.get("/api/security/check-client")
+async def check_client_status(request: Request):
+    """Checks the requesting client's IP address directly."""
+    forwarded = request.headers.get("x-forwarded-for")
+    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "127.0.0.1")
+    return await check_ip_status(client_ip)
+
+@app.get("/api/security/smtp-status")
+async def get_smtp_status():
+    return {
+        "configured": bool(smtp_config["user"] and smtp_config["pass"]),
+        "host": smtp_config["host"],
+        "port": smtp_config["port"],
+        "user": smtp_config["user"]
+    }
+
+@app.post("/api/security/configure-smtp")
+async def configure_smtp(payload: dict):
+    global smtp_config
+    user = str((payload or {}).get("user", "")).strip()
+    password = str((payload or {}).get("password", "")).strip().replace(" ", "")
+    host = str((payload or {}).get("host", "smtp.gmail.com")).strip()
+    port = int((payload or {}).get("port", 587))
+    
+    if not user or not password:
+        return {"success": False, "error": "Email username and App Password are required."}
+    
+    # Test connection and send verification email
+    try:
+        def _test():
+            with smtplib.SMTP(host, port, timeout=10) as server:
+                server.starttls()
+                server.login(user, password)
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = "🛡️ Sentinel SmartOps - SMTP Verified & Active!"
+                msg["From"] = f"Sentinel SmartOps <{user}>"
+                msg["To"] = user
+                msg.attach(MIMEText("✅ Sentinel SmartOps active defense alert pipeline is now verified and connected.", "plain"))
+                server.sendmail(user, [user], msg.as_string())
+        
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _test)
+        
+        smtp_config["host"] = host
+        smtp_config["port"] = port
+        smtp_config["user"] = user
+        smtp_config["pass"] = password
+        
+        await add_log("INFO", f"[SMTP CONFIG] SMTP verified successfully for {user}. Live verification email delivered.")
+        return {"success": True, "message": f"SMTP verified! Live test email sent to {user}."}
+    except Exception as e:
+        return {"success": False, "error": f"SMTP Authentication failed: {str(e)}"}
 
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():

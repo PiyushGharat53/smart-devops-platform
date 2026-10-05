@@ -329,6 +329,14 @@ export default function App() {
   const [inspectingChallenge, setInspectingChallenge] = useState(null);
   const [emailSuccessMsg, setEmailSuccessMsg] = useState("");
 
+  // Live Gmail / SMTP Delivery State
+  const [showSmtpModal, setShowSmtpModal] = useState(false);
+  const [smtpUserInput, setSmtpUserInput] = useState("gharatpiyush63@gmail.com");
+  const [smtpPassInput, setSmtpPassInput] = useState("");
+  const [smtpConnecting, setSmtpConnecting] = useState(false);
+  const [smtpConnected, setSmtpConnected] = useState(false);
+  const [smtpErrorMsg, setSmtpErrorMsg] = useState("");
+
   // MongoDB Atlas Persistence & 30-Day TTL State
   const [mongoConnected, setMongoConnected] = useState(false);
   const [mongoDetails, setMongoDetails] = useState(null);
@@ -475,7 +483,43 @@ export default function App() {
         if (res.data?.recipient_email) setRecipientEmail(res.data.recipient_email);
       })
       .catch(() => {});
+
+    axios.get(`${BACKEND_HTTP_URL}/api/security/smtp-status`)
+      .then((res) => {
+        if (res.data?.configured) {
+          setSmtpConnected(true);
+          if (res.data?.user) setSmtpUserInput(res.data.user);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // ACTION: Connect Live Gmail / SMTP credentials
+  const handleConnectSmtp = async (e) => {
+    if (e) e.preventDefault();
+    if (!smtpUserInput.trim() || !smtpPassInput.trim()) return;
+    setSmtpConnecting(true);
+    setSmtpErrorMsg("");
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/configure-smtp`, {
+        user: smtpUserInput.trim(),
+        password: smtpPassInput.trim()
+      });
+      if (res.data?.success) {
+        setSmtpConnected(true);
+        setShowSmtpModal(false);
+        setRecipientEmail(smtpUserInput.trim());
+        setEmailSuccessMsg(`✅ Live Gmail SMTP Connected! Test email sent to ${smtpUserInput.trim()}`);
+        setTimeout(() => setEmailSuccessMsg(""), 6000);
+      } else {
+        setSmtpErrorMsg(res.data?.error || "Failed to authenticate SMTP credentials");
+      }
+    } catch (err) {
+      setSmtpErrorMsg(err.response?.data?.error || "SMTP verification failed. Check app password.");
+    } finally {
+      setSmtpConnecting(false);
+    }
+  };
 
   // ACTION: Auto-Heal Service
   const healService = useCallback(async (id) => {
@@ -1029,13 +1073,30 @@ export default function App() {
               </button>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{
                 fontSize: 10.5, padding: "2px 8px", borderRadius: 9999, fontWeight: 600,
-                background: "rgba(34,197,94,0.15)", color: "#86efac", border: "1px solid rgba(34,197,94,0.3)"
+                background: smtpConnected ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)",
+                color: smtpConnected ? "#86efac" : "#fde68a",
+                border: smtpConnected ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(245,158,11,0.3)"
               }}>
-                Auto-Dispatch: ON
+                {smtpConnected ? "Live SMTP: CONNECTED" : "Auto-Dispatch: ON"}
               </span>
+
+              <button
+                onClick={() => setShowSmtpModal(true)}
+                className="sso-btn"
+                title="Connect Gmail SMTP credentials for direct inbox email delivery"
+                style={{
+                  display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.65rem",
+                  borderRadius: 6, fontSize: 11, background: "rgba(99,102,241,0.15)",
+                  border: "1px solid rgba(99,102,241,0.35)", color: "#c7d2fe"
+                }}
+              >
+                <KeyRound size={11} color="#a5b4fc" />
+                <span>{smtpConnected ? "SMTP Settings" : "🔑 Connect Gmail"}</span>
+              </button>
+
               <button
                 onClick={() => handleDispatchSecOpsEmail({
                   ip: clientIp || "115.99.142.68",
@@ -1658,6 +1719,110 @@ export default function App() {
               <div className="sso-scroll" style={{ maxHeight: 320, overflowY: "auto", background: "rgba(0,0,0,0.6)", borderRadius: 12, padding: 16, border: "1px solid rgba(239,68,68,0.25)", fontFamily: "monospace", fontSize: 12, color: "#86efac", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
                 {JSON.stringify(inspectingChallenge, null, 2)}
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 9. LIVE GMAIL / SMTP CONFIGURATION MODAL */}
+      <AnimatePresence>
+        {showSmtpModal && (
+          <motion.div
+            style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setShowSmtpModal(false)}
+          >
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.94, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "relative", width: "100%", maxWidth: 520, borderRadius: 16,
+                border: "1px solid rgba(99,102,241,0.4)", padding: 24, display: "flex", flexDirection: "column", gap: 16,
+                background: "linear-gradient(160deg, #101428, #0a0c1a)", boxShadow: "0 20px 50px rgba(0,0,0,0.75)"
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <h3 style={{ fontSize: 17, fontWeight: 600, color: "#ffffff", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <KeyRound size={18} color="#818cf8" /> Connect Gmail SMTP for Live Alerts
+                </h3>
+                <button onClick={() => setShowSmtpModal(false)} className="sso-btn" style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", color: "#94a3b8", display: "flex" }}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div style={{ padding: 12, borderRadius: 10, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)" }}>
+                <p style={{ fontSize: 12, color: "#c7d2fe", margin: 0, lineHeight: 1.5 }}>
+                  <strong>How Live Email Delivery Works:</strong> To deliver attack alerts directly into your personal Gmail inbox, enter your Gmail address and a <strong>16-character Google App Password</strong>.
+                </p>
+                <p style={{ fontSize: 11.5, color: "#94a3b8", margin: "6px 0 0 0" }}>
+                  Generate it in 30 seconds at: <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" style={{ color: "#38bdf8", textDecoration: "underline" }}>myaccount.google.com/apppasswords</a> (App Name: "Sentinel")
+                </p>
+              </div>
+
+              <form onSubmit={handleConnectSmtp} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>Gmail Address:</label>
+                  <input
+                    type="email"
+                    required
+                    value={smtpUserInput}
+                    onChange={(e) => setSmtpUserInput(e.target.value)}
+                    placeholder="gharatpiyush63@gmail.com"
+                    style={{
+                      width: "100%", background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.15)",
+                      borderRadius: 8, padding: "0.55rem 0.8rem", color: "#f8fafc", fontSize: 13, fontFamily: "monospace"
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>16-Letter Google App Password:</label>
+                  <input
+                    type="password"
+                    required
+                    value={smtpPassInput}
+                    onChange={(e) => setSmtpPassInput(e.target.value)}
+                    placeholder="abcd efgh ijkl mnop"
+                    style={{
+                      width: "100%", background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.15)",
+                      borderRadius: 8, padding: "0.55rem 0.8rem", color: "#f8fafc", fontSize: 13, fontFamily: "monospace"
+                    }}
+                  />
+                </div>
+
+                {smtpErrorMsg && (
+                  <p style={{ fontSize: 12, color: "#f87171", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", padding: 8, borderRadius: 6, margin: 0 }}>
+                    {smtpErrorMsg}
+                  </p>
+                )}
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowSmtpModal(false)}
+                    className="sso-btn"
+                    style={{ padding: "0.5rem 1rem", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", fontSize: 12 }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={smtpConnecting || !smtpPassInput.trim()}
+                    className="sso-btn"
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "0.5rem 1.2rem",
+                      borderRadius: 8, border: "1px solid rgba(99,102,241,0.5)", background: "rgba(99,102,241,0.3)",
+                      color: "#e0e7ff", fontSize: 12, fontWeight: 600
+                    }}
+                  >
+                    {smtpConnecting ? <Loader2 size={13} className="sso-spin" /> : <CheckCircle2 size={13} color="#818cf8" />}
+                    <span>{smtpConnecting ? "Verifying with Google..." : "Verify & Connect Live Email"}</span>
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </motion.div>
         )}
