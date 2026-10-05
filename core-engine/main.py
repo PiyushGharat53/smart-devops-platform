@@ -836,7 +836,7 @@ async def simulate_surge(request: Request, payload: dict = None):
     client_ip = (payload or {}).get("client_ip")
     if not client_ip:
         forwarded = request.headers.get("x-forwarded-for")
-        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "115.99.142.68")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "103.57.252.110")
 
     traffic_watchdog.trigger_surge(rps=rps, duration_ticks=duration, client_ip=client_ip)
     await add_log("WARN", f"[SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s (Client: {client_ip}).")
@@ -848,7 +848,7 @@ async def real_burst_test(request: Request, background_tasks: BackgroundTasks, p
     client_ip = (payload or {}).get("client_ip")
     if not client_ip:
         forwarded = request.headers.get("x-forwarded-for")
-        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "115.99.142.68")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "103.57.252.110")
 
     async def burst_worker():
         count_429 = 0
@@ -1157,6 +1157,31 @@ async def configure_smtp(payload: dict):
             }
         return {"success": False, "error": f"SMTP Authentication failed: {err_msg}"}
 
+@app.post("/api/security/report-threat")
+async def report_threat(payload: dict):
+    """Called automatically by FinSight Gateway when an IP exceeds rate limits."""
+    ip = str((payload or {}).get("ip", "")).strip()
+    reason = str((payload or {}).get("reason", "Volumetric rate limit exceeded on FinSight Gateway")).strip()
+    if not ip:
+        return {"success": False, "error": "IP is required"}
+    
+    incident_id = f"INC-{random.randint(1000, 9999)}"
+    entry = {
+        "ip": ip,
+        "threat_level": "CRITICAL",
+        "incident_id": incident_id,
+        "reason": reason,
+        "jailed_at": get_ist_time_str(),
+        "status": "QUARANTINED",
+        "policy": "AUTO_HEURISTIC",
+        "requests_blocked": 1,
+        "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
+        "auto_release_in": "Permanent (Manual Revocation Required)"
+    }
+    jail_ip_callback(entry)
+    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}. Reason: {reason}")
+    return {"success": True, "ip": ip, "incident_id": incident_id, "status": "QUARANTINED"}
+
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():
     return {"jailed_ips": jailed_ips, "count": len(jailed_ips)}
@@ -1257,7 +1282,7 @@ async def dispatch_abuse_email(payload: dict = None):
 @app.get("/api/security/challenge-screen", response_class=HTMLResponse)
 async def challenge_screen(request: Request, ip: Optional[str] = None):
     """Direct HTTP 429 Security Challenge Screen displayed to an attacking or rate-limited client."""
-    client_ip = ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "115.99.142.68")
+    client_ip = ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "103.57.252.110")
     now_ist = get_ist_time_str()
     return f"""
     <!DOCTYPE html>

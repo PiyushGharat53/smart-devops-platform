@@ -1764,7 +1764,7 @@ export default function App() {
 
                 <div>
                   <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>
-                    Resend API Key (<span style="color:#22c55e;">re_...</span>) OR 16-Letter Gmail App Password:
+                    Resend API Key (<span style={{ color: "#22c55e" }}>re_...</span>) OR 16-Letter Gmail App Password:
                   </label>
                   <input
                     type="password"

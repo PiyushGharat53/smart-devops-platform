@@ -70,7 +70,7 @@ class TrafficWatchdog:
         self.cooldown_counter = 0
         self.cooldown_target = 6  # 6 ticks * 2s = 12s stabilization window
         self.last_jailed_ip = None
-        self.current_attacker_ip = "115.99.142.68"
+        self.current_attacker_ip = "103.57.252.110"
         self.pending_spike_ip: Optional[str] = None
 
         self.previous_request_count: Optional[int] = None
@@ -299,7 +299,7 @@ class TrafficWatchdog:
                 self.cooldown_counter = 0
                 self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
 
-                rogue_ip = self.pending_spike_ip or self.current_attacker_ip or "115.99.142.68"
+                rogue_ip = self.pending_spike_ip or self.current_attacker_ip or "103.57.252.110"
                 self.last_jailed_ip = rogue_ip
                 if self.jail_ip_cb:
                     try:
