@@ -4,6 +4,7 @@ import asyncio
 import random
 import json
 import re
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
@@ -18,27 +19,82 @@ from traffic_watchdog import TrafficWatchdog
 # ==========================================
 # Configuration & Environment Variables
 # ==========================================
-MONGO_URI = os.getenv("SENTINEL_MONGO_URI", "")
+MONGO_URI = (
+    os.getenv("SENTINEL_MONGO_URI") or 
+    os.getenv("MONGO_URI") or 
+    os.getenv("MONGODB_URI") or 
+    ""
+)
 FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
 RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
 FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
+# 30-Day TTL in seconds: 30 days * 24 hours * 60 minutes * 60 seconds = 2,592,000s
+RETENTION_PERIOD_SECONDS = 2592000
+
 # MongoDB Setup
 db_client: Optional[AsyncIOMotorClient] = None
 sentinel_db = None
 logs_collection = None
 incidents_collection = None
+mongo_connected = False
 
-if MONGO_URI:
+async def init_mongodb_ttl():
+    """
+    Connects to MongoDB Atlas, verifies ping, and establishes 30-Day TTL Indexes.
+    Any log or incident document older than 30 days is automatically purged by MongoDB.
+    """
+    global db_client, sentinel_db, logs_collection, incidents_collection, mongo_connected, MONGO_URI
+    if not MONGO_URI:
+        print("[MONGO NOTICE] MONGO_URI not configured. Operating with in-memory audit store.")
+        mongo_connected = False
+        return False
+
     try:
-        db_client = AsyncIOMotorClient(MONGO_URI)
+        db_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         sentinel_db = db_client["sentinel_ops"]
         logs_collection = sentinel_db["system_logs"]
         incidents_collection = sentinel_db["incidents"]
+
+        # Ping database to verify connection
+        await sentinel_db.command("ping")
+        mongo_connected = True
+        print("[MONGO ATLAS CONNECTED] Successfully authenticated to MongoDB Atlas cluster.")
+
+        # Establish TTL (Time-To-Live) index on 'createdAt' field (30 Days Auto-Purge)
+        await logs_collection.create_index("createdAt", expireAfterSeconds=RETENTION_PERIOD_SECONDS)
+        await incidents_collection.create_index("createdAt", expireAfterSeconds=RETENTION_PERIOD_SECONDS)
+        print("[MONGO TTL INDEX ACTIVE] Automatic 30-day (2,592,000s) document purge index verified.")
+
+        # Hydrate initial live logs from MongoDB Atlas
+        cursor = logs_collection.find({}, {"_id": 0}).sort("createdAt", -1).limit(40)
+        db_logs = await cursor.to_list(length=40)
+        if db_logs:
+            db_logs.reverse()
+            for l in db_logs:
+                if "createdAt" in l and isinstance(l["createdAt"], datetime):
+                    l["createdAt"] = l["createdAt"].isoformat()
+            live_logs.clear()
+            live_logs.extend(db_logs)
+
+        # Hydrate initial live incidents from MongoDB Atlas
+        inc_cursor = incidents_collection.find({}, {"_id": 0}).sort("createdAt", 1).limit(30)
+        db_inc = await inc_cursor.to_list(length=30)
+        if db_inc:
+            for inc in db_inc:
+                if "createdAt" in inc and isinstance(inc["createdAt"], datetime):
+                    inc["createdAt"] = inc["createdAt"].isoformat()
+            live_incidents.clear()
+            live_incidents.extend(db_inc)
+
+        await add_log("INFO", "MongoDB Atlas Connected: 30-Day TTL auto-purge retention active.")
+        return True
     except Exception as e:
-        print(f"[MONGO INIT WARN] {e}")
+        mongo_connected = False
+        print(f"[MONGO ATLAS CONNECTION WARN] {e}. Falling back to in-memory audit store.")
+        return False
 
 # ==========================================
 # In-Memory State & Constants
@@ -107,6 +163,7 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
 
 async def add_log(level: str, msg: str):
     time_str = time.strftime("%H:%M:%S")
+    now_utc = datetime.now(timezone.utc)
     log_entry = {
         "id": random.randint(10000, 99999),
         "level": level,
@@ -117,22 +174,71 @@ async def add_log(level: str, msg: str):
     if len(live_logs) > 60:
         live_logs.pop(0)
 
-    if logs_collection is not None:
+    # Persist log to MongoDB Atlas with 30-Day TTL timestamp
+    if logs_collection is not None and mongo_connected:
         try:
-            await logs_collection.insert_one(dict(log_entry))
-        except Exception:
-            pass
+            doc = {
+                "log_id": log_entry["id"],
+                "level": level,
+                "msg": msg,
+                "time": time_str,
+                "createdAt": now_utc
+            }
+            await logs_collection.insert_one(doc)
+        except Exception as e:
+            print(f"[MONGO LOG INSERT FAILED] {e}")
+
+async def save_incident_to_mongo(incident_doc: dict):
+    """Saves an incident to MongoDB Atlas with a native BSON createdAt date for 30-Day TTL."""
+    if incidents_collection is not None and mongo_connected:
+        try:
+            doc = dict(incident_doc)
+            doc.pop("_id", None)
+            if "createdAt" not in doc:
+                doc["createdAt"] = datetime.now(timezone.utc)
+            await incidents_collection.update_one(
+                {"id": doc["id"]},
+                {"$set": doc},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"[MONGO INCIDENT INSERT FAILED] {e}")
+
+async def resolve_incident_in_mongo(incident_id: str, note: str):
+    """Updates an incident to Resolved in MongoDB Atlas."""
+    if incidents_collection is not None and mongo_connected:
+        try:
+            await incidents_collection.update_one(
+                {"id": incident_id},
+                {"$set": {
+                    "status": "Resolved",
+                    "remediation": note,
+                    "resolvedAt": datetime.now(timezone.utc)
+                }}
+            )
+        except Exception as e:
+            print(f"[MONGO INCIDENT RESOLVE FAILED] {e}")
 
 def create_incident_callback(incident_doc: dict):
     live_incidents.append(incident_doc)
     if len(live_incidents) > 30:
         live_incidents.pop(0)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(save_incident_to_mongo(incident_doc))
+    except RuntimeError:
+        pass
 
 def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
     for inc in live_incidents:
         if inc.get("id") == incident_id:
             inc["status"] = "Resolved"
             inc["remediation"] = note
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(resolve_incident_in_mongo(incident_id, note))
+    except RuntimeError:
+        pass
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -177,6 +283,8 @@ async def health_check_daemon():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     psutil.cpu_percent(interval=None)
+    # Initialize MongoDB Atlas & TTL indexes on startup
+    await init_mongodb_ttl()
     watchdog_task = asyncio.create_task(traffic_watchdog.start_monitoring("FinSight API Gateway"))
     health_task = asyncio.create_task(health_check_daemon())
     yield
@@ -226,7 +334,7 @@ async def autonomous_heal(service_id: str, service_name: str):
         "time": time.strftime("%H:%M:%S"),
         **rca
     }
-    live_incidents.append(incident_doc)
+    create_incident_callback(incident_doc)
 
     if FINSIGHT_DEPLOY_HOOK_URL and "gateway" in service_id.lower():
         try:
@@ -247,9 +355,7 @@ async def autonomous_heal(service_id: str, service_name: str):
         color=3066993
     )
 
-    for inc in live_incidents:
-        if inc["id"] == incident_id:
-            inc["status"] = "Resolved"
+    resolve_incident_callback(incident_id, "Container auto-remediation successfully completed.")
     healing_in_progress.remove(service_id)
 
 # ==========================================
@@ -303,11 +409,12 @@ async def run_real_deployment_pipeline(
             deployment_state["status"] = "failed"
             
             incident_id = f"INC-{random.randint(1000, 9999)}"
-            live_incidents.append({
+            incident_doc = {
                 "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
                 "title": "Syntax Compilation Failure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
                 "severity": "HIGH", "confidence": 99, "rootCause": error_msg, "remediation": "Auto-rollback complete. Fix syntax locally and push again."
-            })
+            }
+            create_incident_callback(incident_doc)
             await add_log("ANOMALY", f"Pre-flight Gate 3 failed on commit {commit_hash}: Syntax error detected.")
             await send_dispatch_alert("Pre-Flight Gate Blocked", f"🚨 Blocked push from {author} due to syntax failure.", color=15158332)
             return
@@ -336,11 +443,12 @@ async def run_real_deployment_pipeline(
             deployment_state["status"] = "failed"
             
             incident_id = f"INC-{random.randint(1000, 9999)}"
-            live_incidents.append({
+            incident_doc = {
                 "id": incident_id, "service": "CI/CD Pipeline", "service_id": "pipeline",
                 "title": "Critical Vault Exposure", "status": "Active (Blocked)", "time": time.strftime("%H:%M:%S"),
                 "severity": "CRITICAL", "confidence": 100, "rootCause": error_msg, "remediation": "Pipeline hard-blocked. Revoke exposed secret immediately."
-            })
+            }
+            create_incident_callback(incident_doc)
             await add_log("CRITICAL", f"Gate 5 Violation: Exposed {name} detected in commit {commit_hash}!")
             await send_dispatch_alert("Security Gate Violation", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
@@ -382,7 +490,9 @@ async def read_root():
         "service": "Sentinel SmartOps AIOps Engine",
         "status": "active",
         "version": "2.0",
-        "monitored_target": FINSIGHT_API_URL
+        "monitored_target": FINSIGHT_API_URL,
+        "mongo_connected": mongo_connected,
+        "mongo_retention": "30-Day TTL Auto-Purge"
     }
 
 @app.get("/api/workspaces")
@@ -394,13 +504,56 @@ async def get_config():
     masked_webhook = ""
     if DISCORD_WEBHOOK_URL:
         masked_webhook = DISCORD_WEBHOOK_URL[:30] + "..." + DISCORD_WEBHOOK_URL[-8:]
+    masked_mongo = ""
+    if MONGO_URI:
+        masked_mongo = re.sub(r":([^@]+)@", ":****@", MONGO_URI)
+        if len(masked_mongo) > 35:
+            masked_mongo = masked_mongo[:24] + "..." + masked_mongo[-8:]
+
     return {
         "discord_configured": bool(DISCORD_WEBHOOK_URL),
         "discord_webhook_masked": masked_webhook,
         "target_backend_url": FINSIGHT_API_URL,
         "spike_threshold_rps": traffic_watchdog.spike_threshold,
-        "defense_mode_active": traffic_watchdog.defense_mode_active
+        "defense_mode_active": traffic_watchdog.defense_mode_active,
+        "mongo_connected": mongo_connected,
+        "mongo_retention_days": 30,
+        "mongo_retention_policy": "30-Day TTL (2,592,000s) Auto-Purge",
+        "mongo_uri_masked": masked_mongo
     }
+
+@app.get("/api/config/mongo-status")
+async def get_mongo_status():
+    log_count = 0
+    inc_count = 0
+    if logs_collection is not None and mongo_connected:
+        try:
+            log_count = await logs_collection.count_documents({})
+            inc_count = await incidents_collection.count_documents({})
+        except Exception:
+            pass
+
+    return {
+        "connected": mongo_connected,
+        "database": "sentinel_ops" if mongo_connected else "in_memory",
+        "collections": ["system_logs", "incidents"] if mongo_connected else [],
+        "retention_policy": "30-Day TTL (Time-To-Live)",
+        "expire_after_seconds": RETENTION_PERIOD_SECONDS,
+        "logs_persisted_count": log_count,
+        "incidents_persisted_count": inc_count
+    }
+
+@app.post("/api/config/mongo-uri")
+async def update_mongo_uri(payload: dict):
+    global MONGO_URI
+    uri = str(payload.get("mongo_uri", "")).strip()
+    if uri.startswith("mongodb://") or uri.startswith("mongodb+srv://"):
+        MONGO_URI = uri
+        success = await init_mongodb_ttl()
+        if success:
+            return {"message": "MongoDB Atlas connected with 30-Day TTL auto-purge.", "success": True}
+        return {"message": "Could not connect to MongoDB with provided URI. Check credentials and IP access.", "success": False}
+    return {"message": "Invalid MongoDB connection string (must start with mongodb:// or mongodb+srv://)", "success": False}
 
 @app.post("/api/config/discord-webhook")
 async def update_discord_webhook(payload: dict):
@@ -550,7 +703,11 @@ async def websocket_telemetry(websocket: WebSocket):
                 "incidents": live_incidents,
                 "deployment": deployment_state,
                 "traffic_history": traffic_watchdog.get_current_metrics(),
-                "defense_mode_active": traffic_watchdog.defense_mode_active
+                "defense_mode_active": traffic_watchdog.defense_mode_active,
+                "mongo_status": {
+                    "connected": mongo_connected,
+                    "retention_policy": "30-Day TTL Auto-Purge"
+                }
             }
             await websocket.send_json(payload)
             await asyncio.sleep(2)

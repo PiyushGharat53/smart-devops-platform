@@ -6,7 +6,7 @@ import {
   Cpu, MemoryStick, HardDrive, Wifi, Zap, Loader2, CheckCircle2,
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
   CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck, Send, FileCode,
-  Flame, BellRing, Settings
+  Flame, BellRing, Settings, RefreshCw, Check
 } from "lucide-react";
 import LiveTrafficChart from "./components/LiveTrafficChart";
 
@@ -237,6 +237,14 @@ export default function App() {
   const [defenseModeActive, setDefenseModeActive] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
 
+  // MongoDB Atlas Persistence & 30-Day TTL State
+  const [mongoConnected, setMongoConnected] = useState(false);
+  const [mongoDetails, setMongoDetails] = useState(null);
+  const [showMongoModal, setShowMongoModal] = useState(false);
+  const [mongoUriInput, setMongoUriInput] = useState("");
+  const [mongoStatusMsg, setMongoStatusMsg] = useState("");
+  const [savingMongo, setSavingMongo] = useState(false);
+
   // Modals & Panels
   const [connectionState, setConnectionState] = useState("connecting");
   const [triggeringPipeline, setTriggeringPipeline] = useState(false);
@@ -258,7 +266,16 @@ export default function App() {
     ? services.filter((s) => activeWorkspace.service_ids.includes(s.id))
     : services;
 
-  // Initial config & workspaces fetch
+  // Initial config, mongo status & workspaces fetch
+  const fetchMongoStatus = useCallback(() => {
+    axios.get(`${BACKEND_HTTP_URL}/api/config/mongo-status`)
+      .then((res) => {
+        setMongoConnected(Boolean(res.data?.connected));
+        setMongoDetails(res.data);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     axios.get(`${BACKEND_HTTP_URL}/api/workspaces`)
@@ -275,14 +292,15 @@ export default function App() {
     axios.get(`${BACKEND_HTTP_URL}/api/config`)
       .then((res) => {
         if (cancelled) return;
-        if (res.data?.discord_configured) {
-          setDiscordConfigured(true);
-        }
+        if (res.data?.discord_configured) setDiscordConfigured(true);
+        if (res.data?.mongo_connected !== undefined) setMongoConnected(Boolean(res.data.mongo_connected));
       })
       .catch(() => {});
 
+    fetchMongoStatus();
+
     return () => { cancelled = true; };
-  }, []);
+  }, [fetchMongoStatus]);
 
   // Auto-scroll terminal log
   useEffect(() => {
@@ -322,6 +340,7 @@ export default function App() {
           
           if (Array.isArray(data.traffic_history)) setTrafficHistory(data.traffic_history);
           setDefenseModeActive(Boolean(data.defense_mode_active));
+          if (data.mongo_status) setMongoConnected(Boolean(data.mongo_status.connected));
         } catch (err) {
           console.error("Failed to parse telemetry payload", err);
         }
@@ -433,6 +452,30 @@ export default function App() {
     }
   };
 
+  // ACTION: Save / Connect MongoDB Atlas
+  const handleSaveMongoUri = async () => {
+    if (!mongoUriInput.trim()) return;
+    setSavingMongo(true);
+    setMongoStatusMsg("Testing connection & registering 30-Day TTL Index...");
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/config/mongo-uri`, {
+        mongo_uri: mongoUriInput.trim()
+      });
+      if (res.data?.success) {
+        setMongoConnected(true);
+        setMongoStatusMsg("✅ Connected to MongoDB Atlas! 30-Day TTL auto-purge index active.");
+        fetchMongoStatus();
+        setTimeout(() => setShowMongoModal(false), 2200);
+      } else {
+        setMongoStatusMsg(`❌ ${res.data?.message}`);
+      }
+    } catch (err) {
+      setMongoStatusMsg(`❌ Connection error: ${err.message}`);
+    } finally {
+      setSavingMongo(false);
+    }
+  };
+
   const healthyCount = visibleServices.filter((s) => s.status === "healthy").length;
   const healthRate = visibleServices.length > 0 ? ((healthyCount / visibleServices.length) * 100).toFixed(1) : "100.0";
   const activeIncidentCount = incidents.filter((i) => i.status !== "Resolved").length;
@@ -457,6 +500,23 @@ export default function App() {
 
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
             <ConnectionBadge state={connectionState} />
+
+            {/* MongoDB Atlas Persistence Badge & Modal Trigger */}
+            <button
+              onClick={() => { setShowMongoModal(true); fetchMongoStatus(); }}
+              className="sso-btn"
+              title="MongoDB Atlas Lifecycle & 30-Day TTL Auto-Purge Policy"
+              style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "0.45rem 0.85rem",
+                borderRadius: 12, fontSize: 12,
+                border: mongoConnected ? "1px solid rgba(34,197,94,0.4)" : "1px solid rgba(139,92,246,0.4)",
+                background: mongoConnected ? "rgba(34,197,94,0.12)" : "rgba(139,92,246,0.12)",
+                color: mongoConnected ? "#86efac" : "#c4b5fd"
+              }}
+            >
+              <Database size={13} color={mongoConnected ? "#86efac" : "#c4b5fd"} />
+              <span>{mongoConnected ? "MongoDB Atlas (30D TTL)" : "MongoDB Atlas"}</span>
+            </button>
 
             {/* Discord Webhook Button */}
             <button
@@ -647,13 +707,30 @@ export default function App() {
             isSimulating={isSimulating}
         />
 
-        {/* 3. AIOPS AUDIT & SRE EXECUTION LOG */}
+        {/* 3. AIOPS AUDIT & SRE EXECUTION LOG (WITH MONGODB 30-DAY TTL PERSISTENCE) */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
               <Terminal size={16} color="#a5b4fc" /> AIOps Execution Log &amp; Audit Trail
             </h2>
-            <span style={{ fontSize: 11, color: "#64748b" }}>Live Telemetry Polling: Every 2.0s</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div 
+                onClick={() => { setShowMongoModal(true); fetchMongoStatus(); }}
+                className="sso-btn"
+                title="Click to view MongoDB Atlas 30-Day TTL Index configuration"
+                style={{ 
+                  display: "flex", alignItems: "center", gap: 5, fontSize: 11, 
+                  color: mongoConnected ? "#86efac" : "#c4b5fd", 
+                  background: mongoConnected ? "rgba(34,197,94,0.12)" : "rgba(139,92,246,0.12)", 
+                  border: mongoConnected ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(139,92,246,0.3)", 
+                  padding: "3px 10px", borderRadius: 9999 
+                }}
+              >
+                <Database size={12} color={mongoConnected ? "#86efac" : "#c4b5fd"} />
+                <span>{mongoConnected ? "MongoDB Atlas · 30-Day TTL Auto-Purge" : "Audit Store: Ready for MongoDB"}</span>
+              </div>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Live Polling: 2.0s</span>
+            </div>
           </div>
           <div ref={terminalRef} className="sso-scroll" style={{ height: 260, overflowY: "auto", borderRadius: 12, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.06)", padding: 16, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "12.5px", lineHeight: 1.65 }}>
             <AnimatePresence initial={false}>
@@ -670,9 +747,15 @@ export default function App() {
 
         {/* 3. PERSISTENT INCIDENT INTELLIGENCE FEED */}
         <GlassPanel style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 12 }}>
-          <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
-            <AlertTriangle size={16} color="#a5b4fc" /> Incident Intelligence Feed
-          </h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
+              <AlertTriangle size={16} color="#a5b4fc" /> Incident Intelligence Feed
+            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#86efac", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.25)", padding: "3px 10px", borderRadius: 9999 }}>
+              <Clock size={11} color="#86efac" />
+              <span>Auto-Purge: 30-Day TTL Lifecycle</span>
+            </div>
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {incidents.length === 0 && <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>No incidents recorded yet. System operational.</p>}
             {incidents.slice().reverse().map((inc) => {
@@ -747,6 +830,93 @@ export default function App() {
                     <Zap size={16} /> Execute Auto-Heal
                   </button>
                 )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* MONGODB ATLAS RETENTION & 30-DAY TTL MODAL */}
+      <AnimatePresence>
+        {showMongoModal && (
+          <motion.div style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowMongoModal(false)}>
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }} />
+            <motion.div initial={{ opacity: 0, scale: 0.94, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 8 }} onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: "100%", maxWidth: 560, borderRadius: 16, border: "1px solid rgba(34,197,94,0.35)", padding: 24, display: "flex", flexDirection: "column", gap: 18, background: "linear-gradient(160deg, #14113a, #0c0a1f)", boxShadow: "0 20px 50px rgba(0,0,0,0.6)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <h3 style={{ fontSize: 17, fontWeight: 600, color: "#ffffff", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Database size={18} color="#86efac" /> MongoDB Atlas Lifecycle &amp; 30-Day TTL Policy
+                </h3>
+                <button onClick={() => setShowMongoModal(false)} className="sso-btn" style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", color: "#94a3b8", display: "flex" }}><X size={18} /></button>
+              </div>
+              
+              <p style={{ fontSize: 13, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>
+                In compliance with DevOps and enterprise log retention standards, all execution logs and incident tickets are persisted to MongoDB Atlas and automatically purged after <strong>30 days (1 month)</strong> using native MongoDB TTL Indexes.
+              </p>
+
+              {/* Status Details Cards */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <p style={{ fontSize: 10.5, color: "#94a3b8", margin: "0 0 4px 0", textTransform: "uppercase" }}>Cluster &amp; Database</p>
+                  <p style={{ fontSize: 13.5, fontWeight: 600, color: "#f8fafc", margin: 0 }}>Cluster0 · sentinel_ops</p>
+                </div>
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)" }}>
+                  <p style={{ fontSize: 10.5, color: "#86efac", margin: "0 0 4px 0", textTransform: "uppercase" }}>Auto-Purge Policy</p>
+                  <p style={{ fontSize: 13.5, fontWeight: 600, color: "#86efac", margin: 0 }}>30 Days (2,592,000s TTL)</p>
+                </div>
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <p style={{ fontSize: 10.5, color: "#94a3b8", margin: "0 0 4px 0", textTransform: "uppercase" }}>Persisted Collections</p>
+                  <p style={{ fontSize: 13, color: "#cbd5e1", margin: 0 }}>system_logs, incidents</p>
+                </div>
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <p style={{ fontSize: 10.5, color: "#94a3b8", margin: "0 0 4px 0", textTransform: "uppercase" }}>Index Mechanism</p>
+                  <p style={{ fontSize: 13, color: "#cbd5e1", margin: 0 }}>BSON createdAt + TTL Worker</p>
+                </div>
+              </div>
+
+              {/* Connection string input */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 500 }}>MongoDB Atlas Connection URI</label>
+                <input
+                  type="password"
+                  placeholder="mongodb+srv://<username>:<password>@cluster0.../sentinel_ops"
+                  value={mongoUriInput}
+                  onChange={(e) => setMongoUriInput(e.target.value)}
+                  style={{
+                    padding: "0.65rem 0.9rem",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(0,0,0,0.4)",
+                    color: "#f8fafc",
+                    fontSize: 13,
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              {mongoStatusMsg && (
+                <p style={{ fontSize: 12.5, color: mongoStatusMsg.startsWith("✅") ? "#86efac" : "#fbbf24", margin: 0 }}>
+                  {mongoStatusMsg}
+                </p>
+              )}
+
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => setShowMongoModal(false)}
+                  className="sso-btn"
+                  style={{ padding: "0.55rem 1rem", borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", fontSize: 13 }}
+                >
+                  Close
+                </button>
+                <button
+                  onClick={handleSaveMongoUri}
+                  disabled={savingMongo}
+                  className="sso-btn"
+                  style={{ padding: "0.55rem 1.2rem", borderRadius: 10, border: "1px solid rgba(34,197,94,0.5)", background: "rgba(34,197,94,0.22)", color: "#86efac", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  {savingMongo ? <Loader2 size={13} className="sso-spin" /> : <Database size={13} />}
+                  Connect &amp; Verify TTL
+                </button>
               </div>
             </motion.div>
           </motion.div>
