@@ -560,6 +560,20 @@ async def get_mongo_status():
         "incidents_persisted_count": inc_count
     }
 
+@app.get("/api/config/mongo-logs")
+async def get_latest_mongo_logs():
+    if logs_collection is not None and mongo_connected:
+        try:
+            cursor = logs_collection.find({}, {"_id": 0}).sort("createdAt", -1).limit(10)
+            items = await cursor.to_list(length=10)
+            for item in items:
+                if "createdAt" in item and isinstance(item["createdAt"], datetime):
+                    item["createdAt"] = item["createdAt"].isoformat()
+            return {"logs": items, "count": len(items)}
+        except Exception as e:
+            return {"error": str(e), "logs": []}
+    return {"logs": [], "count": 0}
+
 @app.post("/api/config/mongo-uri")
 async def update_mongo_uri(payload: dict):
     global MONGO_URI
