@@ -1284,6 +1284,37 @@ async def challenge_screen(request: Request, ip: Optional[str] = None):
     """Direct HTTP 429 Security Challenge Screen displayed to an attacking or rate-limited client."""
     client_ip = ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "103.57.252.110")
     now_ist = get_ist_time_str()
+
+    # If already released or not blocked, immediately redirect back to FinSight!
+    status_doc = await check_ip_status(client_ip)
+    if not status_doc.get("blocked"):
+        return f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta http-equiv="refresh" content="0; url=https://finsight-erku.onrender.com/#/">
+          <title>Access Restored | Sentinel Active Defense</title>
+          <script>
+            window.location.replace("https://finsight-erku.onrender.com/#/");
+          </script>
+          <style>
+            body {{ background: #080c14; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+            .box {{ background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.4); border-radius: 16px; padding: 36px; text-align: center; max-width: 480px; box-shadow: 0 0 50px rgba(34,197,94,0.2); }}
+            .btn {{ display: inline-block; background: #22c55e; color: #080c14; font-weight: 700; text-decoration: none; padding: 12px 24px; border-radius: 8px; margin-top: 18px; }}
+          </style>
+        </head>
+        <body>
+          <div class="box">
+            <div style="font-size: 44px; margin-bottom: 12px;">✅</div>
+            <h2 style="color: #4ade80; margin: 0 0 10px 0;">Access Restored!</h2>
+            <p style="color: #94a3b8; font-size: 14px; margin: 0; line-height: 1.5;">Your IP (<code>{client_ip}</code>) is no longer quarantined. Returning to FinSight...</p>
+            <a class="btn" href="https://finsight-erku.onrender.com/#/">Return to FinSight &rarr;</a>
+          </div>
+        </body>
+        </html>
+        """
+
     return f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1358,6 +1389,29 @@ async def challenge_screen(request: Request, ip: Optional[str] = None):
         .label {{ color: #9ca3af; }}
         .val {{ color: #38bdf8; font-weight: 600; }}
         .val.danger {{ color: #f87171; font-weight: 700; }}
+        .action-bar {{
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-top: 18px;
+          margin-bottom: 20px;
+        }}
+        .btn-check {{
+          display: inline-block;
+          background: rgba(56, 189, 248, 0.12);
+          border: 1px solid rgba(56, 189, 248, 0.35);
+          color: #38bdf8;
+          text-decoration: none;
+          padding: 9px 16px;
+          border-radius: 8px;
+          font-size: 12.5px;
+          font-weight: 600;
+          transition: all 0.2s;
+        }}
+        .btn-check:hover {{
+          background: rgba(56, 189, 248, 0.22);
+        }}
         .footer {{
           border-top: 1px solid rgba(255, 255, 255, 0.08);
           padding-top: 16px;
@@ -1369,7 +1423,7 @@ async def challenge_screen(request: Request, ip: Optional[str] = None):
       </style>
     </head>
     <body>
-      <div class="card">
+      <div class="card" id="challengeCard">
         <div class="badge">🛡️ HTTP 429 Active Defense Challenge</div>
         <h1>FinSight API Access Quarantined</h1>
         <p>Your client terminal has exceeded the rate limit threshold. Sentinel SmartOps has isolated your IP address in the Active Defense Quarantine Jail.</p>
@@ -1382,13 +1436,51 @@ async def challenge_screen(request: Request, ip: Optional[str] = None):
           <div class="row"><span class="label">SecOps Action:</span><span class="val">Auto-Dispatched Abuse Telemetry</span></div>
         </div>
 
-        <p style="font-size: 12.5px; color: #cbd5e1;"><strong>Remediation:</strong> Suspend automated requests. Sentinel's autonomous self-healing algorithm continuously analyzes traffic stabilization.</p>
+        <p style="font-size: 12.5px; color: #cbd5e1; margin-bottom: 12px;"><strong>Auto-Healing Recovery:</strong> Sentinel continuously listens for SRE release authorization or heuristic cooldown. Once released, this page will automatically return to FinSight.</p>
+
+        <div class="action-bar">
+          <span style="font-size: 11.5px; color: #64748b;" id="statusIndicator">⚡ Real-time status: Monitoring quarantine status...</span>
+          <a class="btn-check" href="https://finsight-erku.onrender.com/#/">Check &amp; Return to FinSight &rarr;</a>
+        </div>
 
         <div class="footer">
           <span>Sentinel SmartOps SRE Engine</span>
           <span>Target: FinSight API Gateway</span>
         </div>
       </div>
+
+      <script>
+        (function() {{
+          var targetIp = "{client_ip}";
+          var checkUrl = "/api/security/check-ip/" + encodeURIComponent(targetIp);
+          var indicator = document.getElementById("statusIndicator");
+          
+          function checkStatus() {{
+            fetch(checkUrl, {{ cache: "no-store" }})
+              .then(function(res) {{ return res.json(); }})
+              .then(function(data) {{
+                if (data && !data.blocked) {{
+                  document.body.innerHTML = `
+                    <div style="background:#080c14;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+                      <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.4);border-radius:16px;padding:36px;text-align:center;max-width:480px;box-shadow:0 0 50px rgba(34,197,94,0.2);">
+                        <div style="font-size:44px;margin-bottom:12px;">✅</div>
+                        <h2 style="color:#4ade80;margin:0 0 10px 0;">Access Restored by SRE!</h2>
+                        <p style="color:#94a3b8;font-size:14px;margin:0;line-height:1.5;">Your IP has been unjailed. Redirecting back to FinSight in 1 second...</p>
+                        <a href="https://finsight-erku.onrender.com/#/" style="display:inline-block;background:#22c55e;color:#080c14;font-weight:700;text-decoration:none;padding:12px 24px;border-radius:8px;margin-top:18px;">Return to FinSight &rarr;</a>
+                      </div>
+                    </div>
+                  `;
+                  setTimeout(function() {{
+                    window.location.replace("https://finsight-erku.onrender.com/#/");
+                  }}, 800);
+                }}
+              }})
+              .catch(function() {{}});
+          }}
+
+          setInterval(checkStatus, 1000);
+        }})();
+      </script>
     </body>
     </html>
     """
