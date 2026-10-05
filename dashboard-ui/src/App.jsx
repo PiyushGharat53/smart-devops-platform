@@ -239,6 +239,32 @@ function formatISTTime(timeStr, createdAt) {
   return timeStr || "--:--:--";
 }
 
+const FALLBACK_SERVICES = [
+  { id: "gateway", name: "FinSight API Gateway", status: "healthy", latency: 42 },
+  { id: "mongo", name: "Primary MongoDB Cluster", status: "healthy", latency: 25 },
+];
+
+function getSeedTrafficHistory() {
+  const points = [];
+  const now = Date.now();
+  for (let i = 12; i > 0; i--) {
+    const d = new Date(now - i * 2000);
+    const t = d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    points.push({
+      time: t,
+      rps: +(2.1 + Math.random() * 0.8).toFixed(2),
+      latency: 42,
+      defense_active: false,
+      heap_used: 20.1,
+      heap_total: 23.5,
+      rss: 74.2,
+      db_status: "CONNECTED",
+      uptime: 120
+    });
+  }
+  return points;
+}
+
 export default function App() {
   const [workspaces, setWorkspaces] = useState(FALLBACK_WORKSPACES);
   const [workspaceId, setWorkspaceId] = useState(FALLBACK_WORKSPACES[0].id);
@@ -259,14 +285,14 @@ export default function App() {
   }, []);
 
   // LIVE TELEMETRY STATE
-  const [services, setServices] = useState([]);
+  const [services, setServices] = useState(FALLBACK_SERVICES);
   const [incidents, setIncidents] = useState([]);
   const [logs, setLogs] = useState([]);
   const [telemetry, setTelemetry] = useState({ cpu: 42, mem: 58, disk: 48, net: 52 });
   const [deployment, setDeployment] = useState({ status: "idle", stage: "Pipeline Ready & Listening" });
   
   // Real-Time Traffic Watchdog State
-  const [trafficHistory, setTrafficHistory] = useState([]);
+  const [trafficHistory, setTrafficHistory] = useState(getSeedTrafficHistory);
   const [defenseModeActive, setDefenseModeActive] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
 

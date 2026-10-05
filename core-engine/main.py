@@ -85,10 +85,11 @@ async def init_mongodb_ttl():
         if db_logs:
             db_logs.reverse()
             for l in db_logs:
-                if "createdAt" in l and isinstance(l["createdAt"], datetime):
-                    created_dt = l["createdAt"]
-                    l["time"] = get_ist_time_str(created_dt)
-                    l["createdAt"] = created_dt.isoformat()
+                for k, v in list(l.items()):
+                    if isinstance(v, datetime):
+                        if k == "createdAt":
+                            l["time"] = get_ist_time_str(v)
+                        l[k] = v.isoformat()
             live_logs.clear()
             live_logs.extend(db_logs)
 
@@ -97,10 +98,11 @@ async def init_mongodb_ttl():
         db_inc = await inc_cursor.to_list(length=30)
         if db_inc:
             for inc in db_inc:
-                if "createdAt" in inc and isinstance(inc["createdAt"], datetime):
-                    created_dt = inc["createdAt"]
-                    inc["time"] = get_ist_time_str(created_dt)
-                    inc["createdAt"] = created_dt.isoformat()
+                for k, v in list(inc.items()):
+                    if isinstance(v, datetime):
+                        if k == "createdAt":
+                            inc["time"] = get_ist_time_str(v)
+                        inc[k] = v.isoformat()
             live_incidents.clear()
             live_incidents.extend(db_inc)
 
@@ -724,7 +726,9 @@ async def websocket_telemetry(websocket: WebSocket):
                     "retention_policy": "30-Day TTL Auto-Purge"
                 }
             }
-            await websocket.send_json(payload)
+            # Bulletproof serialization with default=str prevents any unhandled type error
+            encoded = json.dumps(payload, default=str)
+            await websocket.send_text(encoded)
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass
