@@ -1,89 +1,244 @@
-# 🛡️ FinSight x Sentinel SmartOps: Autonomous Finance & Self-Healing SRE Command Center
+# 🛡️ Sentinel SmartOps — Autonomous SRE & Active Defense Platform
 
-Welcome to the unified repository for **FinSight**, a MERN-stack personal finance tracker, and **Sentinel SmartOps**, our custom-built, enterprise-grade Site Reliability Engineering (SRE) and AIOps platform.
+Sentinel SmartOps is an autonomous Site Reliability Engineering (SRE) and active defense system designed to monitor, protect, and self-heal cloud-hosted web applications. 
 
----
-
-## 📖 Our Journey: From Application to Enterprise Infrastructure
-
-This project began as **FinSight**, a robust financial tracking application designed to help users monitor income, expenses, and savings goals. However, as we prepared for cloud deployment, we realized that building a functional application was only half the engineering challenge. The real challenge was **keeping it alive in production**.
-
-Instead of manually monitoring the app, we built **Sentinel SmartOps** around it. We evolved our architecture from a simple client-server model into a resilient, autonomous ecosystem. We implemented real-time telemetry, active defense middleware to prevent DDoS attacks, closed-loop auto-remediation, and a strict CI/CD pipeline. 
-
-This repository demonstrates not just full-stack development, but modern DevOps, infrastructure automation, and Site Reliability Engineering.
+We built Sentinel as an independent operational layer around **FinSight** (our production MERN finance tracking application). Instead of treating monitoring and security as an afterthought or relying on slow manual interventions, Sentinel continuously tracks incoming telemetry, detects traffic anomalies, auto-quarantines abusive IPs via active defense middleware, dispatches real-time incident reports to SecOps, and enables autonomous self-healing recovery.
 
 ---
 
-## 🚀 Core Architectural Features
+## 🌐 Live Production Deployments
 
-### 1. 📊 Live Network Traffic Watchdog (Telemetry)
-* **Real-Time Observability:** A custom Python SRE engine asynchronously polls the Node.js backend (`/metrics`) every 2 seconds.
-* **Dynamic Visualization:** Calculates live Requests Per Second (RPS) and streams it to the React dashboard, rendering smooth, real-time area charts using Recharts.
-
-### 2. 🛡️ Active Defense Shield & Rate Limiting
-* **In-Memory IP Tracking:** Custom Express.js middleware tracks request frequencies per client IP within a rolling 10-second window.
-* **Automated Blast Shield:** If a single IP exceeds 20 rapid requests, the middleware instantly isolates the user and returns an HTTP `429 Too Many Requests` error, protecting the MongoDB database and server CPU from crashing.
-
-### 3. 🤖 Automated Incident Intelligence & Alerting
-* **Heuristic Anomaly Detection:** When traffic surges past the safe baseline (8.0 RPS), the Sentinel engine flags an anomaly and generates a unique Incident Ticket (e.g., `INC-2227`).
-* **Discord Webhook Integration:** Critical incident data (RPS rate, incident ID, and mitigation status) is immediately dispatched as a rich-text embed to our team's Discord operations channel.
-
-### 4. 🔄 Autonomous Closed-Loop Self-Healing
-* **Zero-Touch Remediation:** Sentinel does not just alert humans; it manages the crisis. Once defense mode engages, the engine monitors the traffic for stabilization. 
-* **Auto-Recovery:** After a 12-second normal baseline cooldown, Sentinel automatically disengages the defense shields, logs a `[REMEDIATED]` status, and sends a green recovery confirmation to Discord.
+| Component | Platform | Live URL |
+| :--- | :--- | :--- |
+| **Sentinel SRE Command Center** | Vercel (Edge) | [smart-devops-platform.vercel.app](https://smart-devops-platform.vercel.app) |
+| **Sentinel AIOps Engine & Watchdog** | Render Cloud | [sentinel-aiops-engine.onrender.com](https://sentinel-aiops-engine.onrender.com) |
+| **FinSight Target Application** | Render Cloud | [finsight-erku.onrender.com/#/](https://finsight-erku.onrender.com/#/) |
 
 ---
 
-## 🚦 Continuous Integration & Delivery (CI/CD)
+## 💡 Why We Built This
 
-Our deployment lifecycle is strictly governed by a custom `.sentinel-config.yml` policy blueprint. Before any code is allowed to reach our Render production servers, the automated pipeline enforces strict pre-flight quality gates:
+When deploying full-stack web applications to public cloud providers, services face constant production threats:
+1. **Unchecked Volumetric Surges & DoS Attempts**: Spikes in rapid requests can exhaust server CPU, crash Node.js event loops, and exceed cloud quota limits.
+2. **Database Resource Starvation**: Unrestricted spam queries saturate MongoDB Atlas connection pools, degrading performance for legitimate users.
+3. **Slow Manual SRE Response**: Human engineers often notice outages minutes or hours after they happen, leading to extended downtime.
+4. **Cloud Egress Restrictions**: Free-tier cloud environments (like Render) block raw outbound SMTP ports (25, 465, 587), causing standard email notification scripts to fail silently with network errors.
 
-1. **Dependency Resolution:** Automates `npm install` for a clean build environment.
-2. **Security Vulnerability Scanning:** Executes `npm audit --audit-level=high` to detect and block vulnerable packages.
-3. **Syntax Integrity Checks:** Runs `node --check server.js` to compile the execution tree and catch fatal syntax errors before runtime.
-4. **Code Linting:** Triggers `eslint` to validate coding standards and syntax health.
-
-*If any of these pre-flight gates fail, the deployment is hard-blocked, ensuring zero broken code enters production.*
-
----
-
-## 🛠️ Technology Stack
-
-**Frontend (Client-Side)**
-* **React.js & Vite:** Core UI framework.
-* **Recharts:** Real-time dynamic SVG charting.
-* **Vercel:** Edge-network cloud hosting.
-
-**Backend (Server-Side)**
-* **Node.js & Express.js:** REST API and Active Defense Middleware.
-* **Render:** Cloud application hosting.
-
-**Database**
-* **MongoDB Atlas:** Fully managed cloud NoSQL database.
-
-**SRE & AIOps Engine (Sentinel)**
-* **Python (Asyncio, HTTPX):** High-performance, non-blocking telemetry polling.
-* **Discord API:** Real-time webhook operations alerts.
+Sentinel SmartOps solves these problems by providing an external, automated guard dog that sits alongside the application to observe, protect, and heal without human delays.
 
 ---
 
-## 📂 Repository Architecture (Monorepo)
+## 🏗️ System Architecture
 
 ```text
-finsight-sentinel-monorepo/
+       [ Legitimate Users ]                [ Attacking Rogue Clients ]
+                │                                      │
+                ▼                                      ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │          FinSight Gateway (Node.js / Express API)           │
+      │  - Rolling 10s In-Memory Request Window                     │
+      │  - Active Defense Shield Middleware                         │
+      │  - Normal Traffic Allowed -> Business Logic & Mongo Atlas   │
+      │  - Volumetric Surge (>20 req/10s) -> Intercepted & Reported │
+      └──────────────┬───────────────────────────────┬──────────────┘
+                     │                               │
+        Reports Threat / Checks IP                   │ Redirects to Challenge
+                     │                               ▼
+                     │              ┌─────────────────────────────────┐
+                     │              │ HTTP 429 Security Challenge     │
+                     │              │ - Live incident telemetry       │
+                     │              │ - Auto-polls for SRE release    │
+                     │              │ - Instant redirect on restore   │
+                     │              └─────────────────────────────────┘
+                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │              Sentinel AIOps Engine (FastAPI)                │
+      │  - Background Telemetry Watchdog (polls /metrics every 2s)  │
+      │  - Dynamic IP Quarantine Jail & Duration Controller         │
+      │  - Cloud SecOps Email Dispatch via Resend (HTTPS 443)       │
+      │  - Discord Operations Webhook Alerts                        │
+      │  - MongoDB Atlas Audit Trail with 30-Day TTL Auto-Purge     │
+      └──────────────────────────────┬──────────────────────────────┘
+                                     │
+                     WebSocket Telemetry & REST API
+                                     │
+                                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │          Sentinel SRE Command Center (React + Vite)         │
+      │  - Real-time RPS & Latency Radar Area Charts (Recharts)     │
+      │  - Active Defense IP Quarantine Jail & Manual IP Blocker    │
+      │  - SRE Duration Overrides (5m, 1h, Permanent Ban, Release)  │
+      │  - Interactive Pre-Flight CI/CD Pipeline Simulator          │
+      │  - Live SecOps SMTP & Cloud API Configuration Modal         │
+      └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚡ Key Features & Engineering Highlights
+
+### 1. Active Defense Shield & Volumetric Surge Detection
+- **Rolling Window Rate Limiting**: FinSight's Express gateway monitors incoming requests per IP across a rolling 10-second window.
+- **Autonomous Blast Shield**: When an IP exceeds 20 requests within 10 seconds, FinSight immediately flags the client as a threat.
+- **Automated SRE Handshake**: The gateway auto-reports the offending IP to Sentinel (`POST /api/security/report-threat`), adding it to the quarantine jail instantly without requiring manual SRE entry.
+
+### 2. HTTP 429 Active Defense Challenge Screen & Zero-Click Recovery
+- **Direct Client Isolation**: Quarantined clients are intercepted with an HTTP 429 status and redirected to `/challenge?ip=<client_ip>`.
+- **Transparent Telemetry**: The challenge screen displays why the request was blocked (Incident ID, IST timestamp, Quarantined IP, Protection Layer).
+- **Zero-Click Real-Time Recovery**: The challenge screen polls Sentinel every 1 second in the background. The moment an SRE operator clicks "Release" on the dashboard (or auto-cooldown expires), the page displays **"✅ Access Restored by SRE!"** and automatically returns the user to FinSight within ~800ms.
+- **Instant F5 Refresh Handling**: If an unbanned user refreshes `/challenge`, the server verifies their status on the fly and immediately redirects them back to FinSight.
+
+### 3. SRE Quarantine Duration & Threat Matrix Controls
+- From the Sentinel dashboard, operators have granular control over jailed IPs:
+  - **5m**: Temporary cooldown block for mild bursts.
+  - **1h**: Extended quarantine for persistent offenders.
+  - **Permanent Ban**: Full block requiring manual SRE revocation.
+  - **Release**: Instant pardon that unlocks the client immediately.
+- **Manual IP Block**: Allows SecOps engineers to proactively jail any suspicious IP address with custom reasoning.
+- **Threat Matrix**: Documented multi-tier defense policy from Tier 1 (Normal 0–8 req/s) up to Tier 4 (Autonomous Remediation).
+
+### 4. Cloud SecOps Alerting (Render Cloud Egress Safe)
+- **The Problem**: Render's free tier firewall blocks outbound SMTP traffic on ports 25, 465, and 587 (`[Errno 101] Network is unreachable`), causing traditional Python `smtplib` scripts to crash.
+- **The Fix**: Sentinel incorporates a dedicated HTTPS API driver using **Resend Cloud API** over standard Port 443. 
+- **Instant Incident Dispatch**: Security alerts and manual test dispatches are delivered directly to the SecOps inbox (`gharatpiyush63@gmail.com`) with full incident details and styled HTML formatting.
+- **Fallback Support**: Also supports Brevo API and standard Gmail SMTP when running in environments with open outbound ports.
+
+### 5. Live Telemetry Watchdog & Real-Time Radar
+- **Asynchronous Watchdog**: The Python engine continuously queries FinSight's internal `/metrics` endpoint every 2 seconds without blocking the event loop.
+- **WebSocket Streaming**: Telemetry updates (RPS, memory usage, active connections) are pushed in real time to the React dashboard over `/ws/telemetry`.
+- **Dynamic Visuals**: Rendered as responsive area charts with peak surge indicators and baseline comparison lines.
+- **Discord Operations Webhook**: Sends rich embeds to a team Discord channel whenever critical incidents or autonomous self-healing events occur.
+
+### 6. MongoDB Atlas 30-Day TTL Auto-Purge
+- Telemetry events and security audit logs are persisted to a cloud MongoDB Atlas cluster.
+- Uses a MongoDB native **TTL (Time-To-Live) index** on timestamp fields:
+  ```javascript
+  db.audit_logs.createIndex({ "timestamp": 1 }, { expireAfterSeconds: 2592000 })
+  ```
+- Stale incident records and telemetry snapshots older than 30 days are automatically pruned by MongoDB background threads, eliminating disk bloat without manual maintenance.
+
+### 7. Interactive Pre-Flight CI/CD Pipeline Simulator
+- Powered by our custom `.sentinel-config.yml` blueprint.
+- Evaluates code safety across 5 distinct validation gates before deployment:
+  1. **Gate 1**: Dependency Resolution (`npm install`)
+  2. **Gate 2**: Security Vulnerability Audit (`npm audit --audit-level=high`)
+  3. **Gate 3**: AST Syntax Compilation Integrity (`node --check server.js`)
+  4. **Gate 4**: Test Suite Execution (`npm test`)
+  5. **Gate 5**: Production Health Probe & Deployment Verification
+- SRE engineers can trigger and inspect the pre-flight pipeline directly from the dashboard UI.
+
+### 8. Chaos Resilience & Graceful Shutdown
+- Target services implement graceful termination handlers for `SIGTERM` and `SIGINT`.
+- During deployment cycles or pod restarts, open HTTP Keep-Alive connections and MongoDB connection pools are cleanly drained within a 10-second safety window, preventing corrupted database writes and dropped user requests.
+
+---
+
+## 🗂️ Project Structure
+
+```text
+smart-devops-platform/
 │
-├── core-engine/         # Python AIOps Backend & Watchdog
-│   ├── traffic_watchdog.py
-│   └── requirements.txt
+├── core-engine/                       # Sentinel SRE & AIOps Backend
+│   ├── main.py                        # FastAPI Server, REST APIs, Security Endpoints & Challenge
+│   ├── traffic_watchdog.py            # Asynchronous background telemetry collector & Discord alerter
+│   ├── requirements.txt               # Python dependencies (FastAPI, Uvicorn, Motor, Requests, etc.)
+│   └── Dockerfile                     # Container definition for cloud deployment
 │
-├── backend/             # Node.js Express API & Active Defense
-│   ├── server.js        # Core API & Rate-Limiting Middleware
-│   ├── .sentinel-config.yml # CI/CD Pre-flight Policy
-│   └── package.json
+├── dashboard-ui/                      # Sentinel Command Center Frontend
+│   ├── src/
+│   │   ├── App.jsx                    # Core Dashboard UI (Radar, Jail, Modals, Logs, CI/CD)
+│   │   ├── App.css                    # Custom styles, animations, and dark mode tokens
+│   │   ├── main.jsx                   # React root entry point
+│   │   └── components/
+│   │       └── LiveTrafficChart.jsx   # Real-time Recharts telemetry visualization
+│   ├── package.json                   # UI dependencies (React, Lucide icons, Recharts, Vite)
+│   ├── vite.config.js                 # Vite build & proxy configuration
+│   └── .env.production                # Production API endpoint targets
 │
-└── dashboard-ui/        # React & Tailwind Command Center
-    ├── src/
-    │   └── components/
-    │       └── LiveTrafficChart.jsx
-    ├── package.json
-    └── vite.config.js
+├── .sentinel-config.yml               # CI/CD Pre-Flight Quality Gates definition
+└── README.md                          # Project documentation
+```
+
+---
+
+## 🎬 How to Run the Live Review Demo
+
+Follow these steps to demonstrate Sentinel's autonomous protection during an evaluation or presentation:
+
+1. **Open the Dashboards**:
+   - Open the **Sentinel Command Center**: `https://smart-devops-platform.vercel.app`
+   - In a separate window or tab, open **FinSight**: `https://finsight-erku.onrender.com/#/`
+   - Open your email inbox (`gharatpiyush63@gmail.com`) to observe real-time SecOps dispatches.
+
+2. **Simulate a Volumetric Traffic Surge**:
+   - On the FinSight tab, trigger rapid requests (or spam reload the data).
+   - Once requests exceed 20 within 10 seconds, FinSight's active defense engages.
+   - The browser is immediately locked into the **HTTP 429 Active Defense Challenge Screen**.
+
+3. **Verify Autonomous SRE Detection**:
+   - Switch to the **Sentinel Command Center**.
+   - Notice the telemetry radar spike in real time.
+   - Check the **Active Defense IP Quarantine Jail**: the attacker's IP appears automatically with threat details.
+   - Check the **AIOps Execution Log & Audit Trail**: a `[CRITICAL]` entry confirms the jail event.
+   - A SecOps incident email is automatically dispatched via Resend Cloud API.
+
+4. **Demonstrate Zero-Click Recovery**:
+   - On the Sentinel dashboard, locate the quarantined IP and click **Release**.
+   - Switch back to the blocked client's tab (the HTTP 429 challenge screen).
+   - Within 1 second, the challenge screen automatically turns green (**"✅ Access Restored by SRE!"**) and navigates straight back into FinSight without the user even touching refresh.
+
+---
+
+## 💻 Local Development Setup
+
+### Prerequisites
+- Node.js (v18+) & npm
+- Python (v3.10+)
+- MongoDB (Local instance or free MongoDB Atlas URI)
+
+### 1. Run Sentinel Core Engine (Python FastAPI)
+```bash
+cd smart-devops-platform/core-engine
+python -m venv venv
+
+# Windows:
+.\venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+*Engine runs at `http://localhost:8000` (API docs at `http://localhost:8000/docs`).*
+
+### 2. Run Sentinel Command Center (React + Vite)
+```bash
+cd smart-devops-platform/dashboard-ui
+npm install
+npm run dev
+```
+*Dashboard runs at `http://localhost:5173`.*
+
+### 3. Run FinSight Target Application (Backend + Frontend)
+```bash
+# In your FinSight backend directory:
+cd backend
+npm install
+node server.js
+
+# In your FinSight frontend directory:
+cd frontend
+npm install
+npm start
+```
+*FinSight backend runs at `http://localhost:5000` and frontend runs at `http://localhost:3000`.*
+
+---
+
+## 👥 Authors & Academic Context
+
+Developed as a Third Year Engineering Capstone project demonstrating modern **Site Reliability Engineering (SRE)**, **Autonomous Cloud Defense**, and **AIOps Telemetry Pipelines**.
+
+- **Author**: Piyush Gharat
+- **Repository**: [github.com/PiyushGharat53/smart-devops-platform](https://github.com/PiyushGharat53/smart-devops-platform)
+- **Monitored Application**: [github.com/PiyushGharat53/finsight](https://github.com/PiyushGharat53/finsight)
