@@ -45,7 +45,7 @@ class TrafficWatchdog:
         jail_ip_cb: Optional[Callable] = None,
         release_ip_cb: Optional[Callable] = None,
         target_url: Optional[str] = None,
-        spike_threshold: float = 8.0,
+        spike_threshold: float = 4.0,
         *args,
         **kwargs
     ):

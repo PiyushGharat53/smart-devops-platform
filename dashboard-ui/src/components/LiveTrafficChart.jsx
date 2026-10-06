@@ -17,7 +17,7 @@ export default function LiveTrafficChart({
     
     const themeColor = defenseModeActive ? '#ef4444' : '#38bdf8';
     const gradientId = defenseModeActive ? 'colorAlert' : 'colorNormal';
-    const SPIKE_LIMIT = 8.0;
+    const SPIKE_LIMIT = 4.0;
 
     return (
         <div style={{
