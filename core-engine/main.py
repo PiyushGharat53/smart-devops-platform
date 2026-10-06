@@ -978,7 +978,8 @@ async def update_recipient_email(payload: dict):
 @app.get("/api/security/check-ip/{ip}")
 async def check_ip_status(ip: str):
     """Enables FinSight Gateway / Frontend to check if an IP is currently quarantined or banned."""
-    matched = next((item for item in jailed_ips if item["ip"] == ip), None)
+    clean_ip = ip.replace("::ffff:", "").strip()
+    matched = next((item for item in jailed_ips if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip), None)
     if matched:
         is_blocked = (
             matched.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR") or
@@ -986,16 +987,16 @@ async def check_ip_status(ip: str):
         ) and matched.get("policy") != "RELEASED" and not str(matched.get("status", "")).startswith("RELEASED")
         
         return {
-            "ip": ip,
+            "ip": clean_ip,
             "blocked": is_blocked,
             "status": matched.get("status", "ALLOWED"),
             "policy": matched.get("policy", "NONE"),
             "reason": matched.get("reason", "Volumetric violation"),
             "incident_id": matched.get("incident_id", ""),
-            "challenge_url": f"https://sentinel-aiops-engine.onrender.com/challenge?ip={ip}"
+            "challenge_url": f"https://sentinel-aiops-engine.onrender.com/challenge?ip={clean_ip}"
         }
     return {
-        "ip": ip,
+        "ip": clean_ip,
         "blocked": False,
         "status": "ALLOWED",
         "policy": "NONE"
@@ -1005,7 +1006,9 @@ async def check_ip_status(ip: str):
 async def check_client_status(request: Request):
     """Checks the requesting client's IP address directly."""
     forwarded = request.headers.get("x-forwarded-for")
-    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "127.0.0.1")
+    client_ip = (forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "127.0.0.1")).replace("::ffff:", "").strip()
+    if client_ip and client_ip not in ("127.0.0.1", "::1", "unknown"):
+        traffic_watchdog.current_attacker_ip = client_ip
     return await check_ip_status(client_ip)
 
 @app.get("/api/security/smtp-status")
