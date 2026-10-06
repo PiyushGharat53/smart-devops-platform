@@ -265,20 +265,7 @@ def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
 # Active Defense IP Quarantine Jail State & SecOps Alert Configuration
 secops_recipient_email: str = "secops-incident-team@finsight.io"
 
-jailed_ips: List[Dict[str, Any]] = [
-    {
-        "ip": "115.99.142.68",
-        "threat_level": "CRITICAL",
-        "incident_id": "INC-2085",
-        "reason": "Volumetric traffic burst exceeding 8.0 req/s threshold",
-        "jailed_at": get_ist_time_str(),
-        "status": "RELEASED (Self-Healed)",
-        "policy": "RELEASED",
-        "requests_blocked": 28,
-        "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
-        "auto_release_in": "Remediated"
-    }
-]
+jailed_ips: List[Dict[str, Any]] = []
 
 # Dynamic SMTP & Cloud HTTPS Email Configuration (Resend, Brevo, Gmail SMTP)
 smtp_config: Dict[str, Any] = {
@@ -466,15 +453,15 @@ def jail_ip_callback(ip_doc: dict):
     except RuntimeError:
         pass
 
-def release_ip_callback(incident_id: str):
+def release_ip_callback(incident_id: str, target_ip: Optional[str] = None):
     global jailed_ips
     for entry in jailed_ips:
-        if entry.get("incident_id") == incident_id:
+        if entry.get("incident_id") == incident_id or (target_ip and entry.get("ip") == target_ip) or (incident_id == "INC-REMEDIATED" and entry.get("policy") in (None, "AUTO_COOLDOWN")):
             # Respect manual SRE locks: only self-heal if policy is AUTO_COOLDOWN or unset
             if entry.get("policy") in (None, "AUTO_COOLDOWN"):
                 entry["status"] = "RELEASED (Self-Healed)"
                 entry["policy"] = "RELEASED"
-                entry["auto_release_in"] = "Remediated"
+                entry["auto_release_in"] = "Remediated by SRE Cooldown"
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -1162,10 +1149,12 @@ async def report_threat(payload: dict):
     """Called automatically by FinSight Gateway when an IP exceeds rate limits."""
     ip = str((payload or {}).get("ip", "")).strip()
     reason = str((payload or {}).get("reason", "Volumetric rate limit exceeded on FinSight Gateway")).strip()
+    policy = str((payload or {}).get("policy", "AUTO_COOLDOWN")).strip()
     if not ip:
         return {"success": False, "error": "IP is required"}
     
     incident_id = f"INC-{random.randint(1000, 9999)}"
+    auto_release_str = "12s (Self-Healing Cooldown)" if policy == "AUTO_COOLDOWN" else "Permanent (Manual Revocation Required)"
     entry = {
         "ip": ip,
         "threat_level": "CRITICAL",
@@ -1173,10 +1162,10 @@ async def report_threat(payload: dict):
         "reason": reason,
         "jailed_at": get_ist_time_str(),
         "status": "QUARANTINED",
-        "policy": "AUTO_HEURISTIC",
+        "policy": policy,
         "requests_blocked": 1,
         "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
-        "auto_release_in": "Permanent (Manual Revocation Required)"
+        "auto_release_in": auto_release_str
     }
     jail_ip_callback(entry)
     await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}. Reason: {reason}")

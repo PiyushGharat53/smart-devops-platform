@@ -311,20 +311,7 @@ export default function App() {
   const [isEnforcingBlock, setIsEnforcingBlock] = useState(false);
   const [showManualBlockPanel, setShowManualBlockPanel] = useState(false);
 
-  const [jailedIps, setJailedIps] = useState([
-    {
-      ip: "115.99.142.68",
-      threat_level: "CRITICAL",
-      incident_id: "INC-2085",
-      reason: "Volumetric traffic burst exceeding threshold (8.0 req/s)",
-      jailed_at: "21:50:40",
-      status: "RELEASED (Self-Healed)",
-      policy: "RELEASED",
-      requests_blocked: 28,
-      action_taken: "Direct HTTP 429 Security Challenge Dispatched",
-      auto_release_in: "Remediated"
-    }
-  ]);
+  const [jailedIps, setJailedIps] = useState([]);
   const [showThreatMatrixModal, setShowThreatMatrixModal] = useState(false);
   const [inspectingChallenge, setInspectingChallenge] = useState(null);
   const [emailSuccessMsg, setEmailSuccessMsg] = useState("");

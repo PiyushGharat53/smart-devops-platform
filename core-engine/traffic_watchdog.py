@@ -69,8 +69,7 @@ class TrafficWatchdog:
         self.current_incident_id = None
         self.cooldown_counter = 0
         self.cooldown_target = 6  # 6 ticks * 2s = 12s stabilization window
-        self.last_jailed_ip = None
-        self.current_attacker_ip = "103.57.252.110"
+        self.current_attacker_ip = None
         self.pending_spike_ip: Optional[str] = None
 
         self.previous_request_count: Optional[int] = None
@@ -206,6 +205,11 @@ class TrafficWatchdog:
                 rss = memory_info.get("rssMB", 74.2)
                 db_status = db_info.get("status", "CONNECTED")
                 uptime = data.get("uptime_seconds", 0)
+                
+                # Capture active top requester IP directly from FinSight metrics
+                top_ip = data.get("active_top_ip") or data.get("top_client_ip")
+                if top_ip and str(top_ip).strip() not in ("unknown", "127.0.0.1", "none", "", "::1"):
+                    self.current_attacker_ip = str(top_ip).strip()
 
                 # Check database status
                 if db_status == "DISCONNECTED" and not self.db_incident_active:
@@ -278,7 +282,7 @@ class TrafficWatchdog:
                 )
                 if self.release_ip_cb:
                     try:
-                        self.release_ip_cb(inc_id)
+                        self.release_ip_cb(inc_id, self.last_jailed_ip)
                     except Exception as e:
                         print(f"[WATCHDOG RELEASE IP ERROR] {e}")
 
@@ -299,24 +303,25 @@ class TrafficWatchdog:
                 self.cooldown_counter = 0
                 self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
 
-                rogue_ip = self.pending_spike_ip or self.current_attacker_ip or "103.57.252.110"
-                self.last_jailed_ip = rogue_ip
-                if self.jail_ip_cb:
-                    try:
-                        self.jail_ip_cb({
-                            "ip": rogue_ip,
-                            "threat_level": "CRITICAL",
-                            "incident_id": self.current_incident_id,
-                            "reason": f"Volumetric surge ({current_rps:.1f} req/s) exceeding threshold ({self.spike_threshold} req/s)",
-                            "jailed_at": current_time_str,
-                            "status": "QUARANTINED",
-                            "policy": "AUTO_COOLDOWN",
-                            "requests_blocked": random.randint(18, 35),
-                            "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
-                            "auto_release_in": "12s (Self-Healing Cooldown)"
-                        })
-                    except Exception as e:
-                        print(f"[WATCHDOG JAIL IP ERROR] {e}")
+                rogue_ip = self.pending_spike_ip or self.current_attacker_ip
+                if rogue_ip:
+                    self.last_jailed_ip = rogue_ip
+                    if self.jail_ip_cb:
+                        try:
+                            self.jail_ip_cb({
+                                "ip": rogue_ip,
+                                "threat_level": "CRITICAL",
+                                "incident_id": self.current_incident_id,
+                                "reason": f"Volumetric surge ({current_rps:.1f} req/s) exceeding threshold ({self.spike_threshold} req/s)",
+                                "jailed_at": current_time_str,
+                                "status": "QUARANTINED",
+                                "policy": "AUTO_COOLDOWN",
+                                "requests_blocked": random.randint(18, 35),
+                                "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
+                                "auto_release_in": "12s (Self-Healing Cooldown)"
+                            })
+                        except Exception as e:
+                            print(f"[WATCHDOG JAIL IP ERROR] {e}")
 
                 await self.log(
                     "ANOMALY",
