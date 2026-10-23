@@ -228,8 +228,10 @@ async def send_sre_email(subject: str, html_content: str, text_content: str = ""
     global secops_recipient_email, smtp_config, sentinel_db, mongo_connected
     effective_recipient = recipient or secops_recipient_email
     if not effective_recipient or "@finsight.io" in effective_recipient:
-        if smtp_config.get("user") and "@" in smtp_config.get("user"):
+        if smtp_config.get("user") and "@" in smtp_config.get("user") and "@finsight.io" not in smtp_config["user"]:
             effective_recipient = smtp_config["user"]
+        else:
+            effective_recipient = "gharatpiyush63@gmail.com"
     if not effective_recipient or "@" not in effective_recipient:
         effective_recipient = "gharatpiyush63@gmail.com"
 
@@ -503,7 +505,7 @@ async def send_pipeline_alert_to_outlook(
     Time: {get_ist_time_str()} IST
     """
     success, status_msg = await send_sre_email(subject, html_content, text_content)
-    await add_log("INFO" if success else "WARNING", f"[{incident_id}] [OUTLOOK CI/CD DISPATCH] Gate failure incident card sent to {secops_recipient_email}. Status: {status_msg}")
+    await add_log("INFO" if success else "WARNING", f"[{incident_id}] [OUTLOOK CI/CD DISPATCH] {status_msg}")
     return success, status_msg
 
 async def send_pipeline_success_to_outlook(
@@ -589,7 +591,7 @@ async def send_pipeline_success_to_outlook(
     Time: {get_ist_time_str()} IST
     """
     success, status_msg = await send_sre_email(subject, html_content, text_content)
-    await add_log("INFO" if success else "WARNING", f"[{release_id}] [OUTLOOK CI/CD RELEASE DISPATCH] Success release card sent to {secops_recipient_email}. Status: {status_msg}")
+    await add_log("INFO" if success else "WARNING", f"[{release_id}] [OUTLOOK CI/CD RELEASE DISPATCH] {status_msg}")
     return success, status_msg
 
 async def add_log(level: str, msg: str):
