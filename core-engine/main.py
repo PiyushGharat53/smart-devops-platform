@@ -422,6 +422,10 @@ def jail_ip_callback(ip_doc: dict):
             new_dev = (ip_doc.get("device_id") or "").strip()
             if ex_dev and new_dev and ex_dev != new_dev:
                 continue
+            ex_local = (existing.get("local_ip") or "").strip()
+            new_local = (ip_doc.get("local_ip") or "").strip()
+            if ex_local and new_local and ex_local != new_local:
+                continue
             ex_name = (existing.get("device_name") or "").strip().lower()
             new_name = (ip_doc.get("device_name") or "").strip().lower()
             if ex_name and new_name and (("mobile" in ex_name) != ("mobile" in new_name)):
@@ -986,11 +990,17 @@ async def update_recipient_email(payload: dict):
     return {"success": False, "error": "Invalid email address"}
 
 @app.get("/api/security/check-ip/{ip}")
-async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name: Optional[str] = None):
+async def check_ip_status(
+    ip: str, 
+    device_id: Optional[str] = None, 
+    device_name: Optional[str] = None,
+    local_ip: Optional[str] = None
+):
     """Enables FinSight Gateway / Frontend to check if an IP or specific device is currently quarantined or banned."""
     clean_ip = ip.replace("::ffff:", "").strip()
     clean_dev_id = (device_id or "").strip()
     clean_dev_name = (device_name or "").strip()
+    clean_local_ip = (local_ip or "").strip()
 
     matched = None
     for item in jailed_ips:
@@ -998,13 +1008,18 @@ async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name:
         if entry_ip == clean_ip:
             entry_dev_id = (item.get("device_id") or "").strip()
             entry_dev_name = (item.get("device_name") or "").strip()
+            entry_local_ip = (item.get("local_ip") or "").strip()
 
             # Device-level disambiguation behind NAT / Shared Wi-Fi:
-            # 1. If quarantined item specifically targeted a device_id:
+            # 1. Match by unique device_id if both have it:
             if entry_dev_id and clean_dev_id:
                 if clean_dev_id != entry_dev_id:
                     continue  # Another innocent device on the same Wi-Fi router is spared!
-            # 2. Or if quarantined item targeted a specific device category (e.g. Mobile vs Laptop):
+            # 2. Match by local LAN IP if present:
+            elif entry_local_ip and clean_local_ip:
+                if clean_local_ip != entry_local_ip:
+                    continue  # Different local IP on the same router is spared!
+            # 3. Match by device platform category (e.g. Mobile vs Laptop):
             elif entry_dev_name and clean_dev_name:
                 is_entry_mobile = "mobile" in entry_dev_name.lower() or "phone" in entry_dev_name.lower()
                 is_curr_mobile = "mobile" in clean_dev_name.lower() or "phone" in clean_dev_name.lower()
@@ -1022,6 +1037,7 @@ async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name:
         
         return {
             "ip": clean_ip,
+            "local_ip": matched.get("local_ip") or clean_local_ip,
             "device_id": matched.get("device_id") or clean_dev_id,
             "device_name": matched.get("device_name") or clean_dev_name,
             "blocked": is_blocked,
@@ -1033,6 +1049,7 @@ async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name:
         }
     return {
         "ip": clean_ip,
+        "local_ip": clean_local_ip,
         "device_id": clean_dev_id,
         "device_name": clean_dev_name,
         "blocked": False,
@@ -1041,17 +1058,29 @@ async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name:
     }
 
 @app.get("/api/security/check-client")
-async def check_client_status(request: Request, device_id: Optional[str] = None, device_name: Optional[str] = None):
+async def check_client_status(
+    request: Request, 
+    device_id: Optional[str] = None, 
+    device_name: Optional[str] = None,
+    local_ip: Optional[str] = None
+):
     """Checks the requesting client's IP and Device ID directly."""
     forwarded = request.headers.get("x-forwarded-for")
     client_ip = (forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "127.0.0.1")).replace("::ffff:", "").strip()
     
     dev_id = device_id or request.headers.get("x-device-id") or ""
     dev_name = device_name or request.headers.get("x-device-name") or ""
+    loc_ip = local_ip or request.headers.get("x-local-ip") or ""
     
     if client_ip and client_ip not in ("127.0.0.1", "::1", "unknown"):
         traffic_watchdog.current_attacker_ip = client_ip
-    return await check_ip_status(client_ip, dev_id, dev_name)
+        if dev_id:
+            traffic_watchdog.current_attacker_device_id = dev_id
+        if dev_name:
+            traffic_watchdog.current_attacker_device_name = dev_name
+        if loc_ip:
+            traffic_watchdog.current_attacker_local_ip = loc_ip
+    return await check_ip_status(client_ip, dev_id, dev_name, loc_ip)
 
 @app.get("/api/security/smtp-status")
 async def get_smtp_status():
@@ -1250,6 +1279,7 @@ def schedule_cooldown_task(incident_id: str, ip: str, seconds: int, policy: str,
 async def report_threat(payload: dict):
     """Called automatically by FinSight Gateway when an IP/device exceeds rate limits."""
     ip = str((payload or {}).get("ip", "")).strip()
+    local_ip = str((payload or {}).get("local_ip", "")).strip()
     device_id = str((payload or {}).get("device_id", "")).strip()
     device_name = str((payload or {}).get("device_name", "")).strip()
     reason = str((payload or {}).get("reason", "Volumetric rate limit exceeded on FinSight Gateway")).strip()
@@ -1261,6 +1291,7 @@ async def report_threat(payload: dict):
     auto_release_str = "12s (Self-Healing Cooldown)" if policy == "AUTO_COOLDOWN" else "Permanent (Manual Revocation Required)"
     entry = {
         "ip": ip,
+        "local_ip": local_ip,
         "device_id": device_id,
         "device_name": device_name,
         "threat_level": "CRITICAL",
@@ -1274,19 +1305,25 @@ async def report_threat(payload: dict):
         "auto_release_in": auto_release_str
     }
     jail_ip_callback(entry)
-    dev_str = f" [{device_name} ({device_id})]" if (device_name or device_id) else ""
-    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}{dev_str}. Reason: {reason}")
+    dev_str = f" [{device_name} ({local_ip or device_id})]" if (device_name or local_ip or device_id) else ""
+    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue client {local_ip or ip}{dev_str}. Reason: {reason}")
     
     # Engage watchdog state and launch live 12s auto-cooldown countdown
     if policy == "AUTO_COOLDOWN":
         traffic_watchdog.defense_mode_active = True
         traffic_watchdog.current_attacker_ip = ip
+        if local_ip:
+            traffic_watchdog.current_attacker_local_ip = local_ip
+        if device_id:
+            traffic_watchdog.current_attacker_device_id = device_id
+        if device_name:
+            traffic_watchdog.current_attacker_device_name = device_name
         traffic_watchdog.last_jailed_ip = ip
         traffic_watchdog.current_incident_id = incident_id
         traffic_watchdog.cooldown_counter = 0
         schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown")
 
-    return {"success": True, "ip": ip, "device_id": device_id, "device_name": device_name, "incident_id": incident_id, "status": "QUARANTINED"}
+    return {"success": True, "ip": ip, "local_ip": local_ip, "device_id": device_id, "device_name": device_name, "incident_id": incident_id, "status": "QUARANTINED"}
 
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():

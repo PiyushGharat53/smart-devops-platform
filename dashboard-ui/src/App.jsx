@@ -1283,8 +1283,30 @@ export default function App() {
                       </span>
 
                       <div>
-                        <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "#f8fafc", fontFamily: "monospace" }}>
-                          {entry.ip} {entry.device_name && <span style={{ color: "#38bdf8", fontWeight: 500, fontSize: 11.5, background: "rgba(56,189,248,0.15)", border: "1px solid rgba(56,189,248,0.3)", padding: "1px 7px", borderRadius: 4, marginLeft: 6 }}>📱 {entry.device_name}</span>} <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11.5 }}>· {entry.incident_id}</span>
+                        <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "#f8fafc", fontFamily: "monospace", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{ color: "#38bdf8", fontWeight: 700 }}>
+                            {entry.local_ip || entry.ip}
+                          </span>
+                          {entry.local_ip && (
+                            <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11 }}>
+                              (WAN: {entry.ip})
+                            </span>
+                          )}
+                          {entry.device_name && (
+                            <span style={{
+                              color: "#a78bfa",
+                              fontWeight: 500,
+                              fontSize: 11.5,
+                              background: "rgba(167,139,250,0.15)",
+                              border: "1px solid rgba(167,139,250,0.3)",
+                              padding: "1px 7px",
+                              borderRadius: 4
+                            }}>
+                              {entry.device_name.toLowerCase().includes("mobile") || entry.device_name.toLowerCase().includes("android") || entry.device_name.toLowerCase().includes("apple") ? "📱 " : "💻 "}
+                              {entry.device_name}
+                            </span>
+                          )}
+                          <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11.5 }}>· {entry.incident_id}</span>
                         </p>
                         <p style={{ margin: "2px 0 0 0", fontSize: 11.5, color: "#94a3b8" }}>
                           {entry.reason} &middot; <strong style={{ color: "#fca5a5" }}>{entry.requests_blocked || 20} blocked (HTTP 429)</strong>

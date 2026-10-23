@@ -70,6 +70,9 @@ class TrafficWatchdog:
         self.cooldown_counter = 0
         self.cooldown_target = 6  # 6 ticks * 2s = 12s stabilization window
         self.current_attacker_ip = None
+        self.current_attacker_local_ip = ""
+        self.current_attacker_device_id = ""
+        self.current_attacker_device_name = ""
         self.pending_spike_ip: Optional[str] = None
 
         self.previous_request_count: Optional[int] = None
@@ -206,10 +209,19 @@ class TrafficWatchdog:
                 db_status = db_info.get("status", "CONNECTED")
                 uptime = data.get("uptime_seconds", 0)
                 
-                # Capture active top requester IP directly from FinSight metrics
+                # Capture active top requester IP & device directly from FinSight metrics
                 top_ip = data.get("active_top_ip") or data.get("top_client_ip")
+                top_local_ip = data.get("active_top_local_ip") or ""
+                top_dev_id = data.get("active_top_device_id") or ""
+                top_dev_name = data.get("active_top_device_name") or ""
                 if top_ip and str(top_ip).strip() not in ("unknown", "127.0.0.1", "none", "", "::1"):
                     self.current_attacker_ip = str(top_ip).strip()
+                    if top_local_ip:
+                        self.current_attacker_local_ip = str(top_local_ip).strip()
+                    if top_dev_id:
+                        self.current_attacker_device_id = str(top_dev_id).strip()
+                    if top_dev_name:
+                        self.current_attacker_device_name = str(top_dev_name).strip()
 
                 # Check database status
                 if db_status == "DISCONNECTED" and not self.db_incident_active:
@@ -310,6 +322,9 @@ class TrafficWatchdog:
                         try:
                             self.jail_ip_cb({
                                 "ip": rogue_ip,
+                                "local_ip": getattr(self, "current_attacker_local_ip", ""),
+                                "device_id": getattr(self, "current_attacker_device_id", ""),
+                                "device_name": getattr(self, "current_attacker_device_name", ""),
                                 "threat_level": "CRITICAL",
                                 "incident_id": self.current_incident_id,
                                 "reason": f"Volumetric surge ({current_rps:.1f} req/s) exceeding threshold ({self.spike_threshold} req/s)",
