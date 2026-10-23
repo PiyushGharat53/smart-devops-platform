@@ -1201,15 +1201,39 @@ export default function App() {
                     type="button"
                     onClick={() => setManualBlockIp(clientIp)}
                     className="sso-btn"
-                    title={`Fill with your computer's public IP (${clientIp})`}
+                    title={`Fill with your computer's public WAN IP (${clientIp})`}
                     style={{
                       fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
                       background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.3)", color: "#7dd3fc"
                     }}
                   >
-                    📍 My IP ({clientIp})
+                    📍 WAN IP ({clientIp})
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setManualBlockIp("192.168.1.128")}
+                  className="sso-btn"
+                  title="Target Windows PC on local LAN (192.168.1.128)"
+                  style={{
+                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
+                    background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)", color: "#c4b5fd"
+                  }}
+                >
+                  💻 Windows PC (192.168.1.128)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setManualBlockIp("192.168.1.167")}
+                  className="sso-btn"
+                  title="Target Android Mobile on local LAN (192.168.1.167)"
+                  style={{
+                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
+                    background: "rgba(244,114,182,0.12)", border: "1px solid rgba(244,114,182,0.3)", color: "#f472b6"
+                  }}
+                >
+                  📱 Mobile (192.168.1.167)
+                </button>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

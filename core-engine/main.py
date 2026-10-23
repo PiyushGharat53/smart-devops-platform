@@ -1015,53 +1015,39 @@ async def check_ip_status(
     matched = None
     for item in jailed_ips:
         entry_ip = item.get("ip", "").replace("::ffff:", "").strip()
-        if entry_ip == clean_ip:
-            entry_dev_id = (item.get("device_id") or "").strip()
-            entry_dev_name = (item.get("device_name") or "").strip()
-            entry_local_ip = (item.get("local_ip") or "").strip()
+        entry_dev_id = (item.get("device_id") or "").strip()
+        entry_dev_name = (item.get("device_name") or "").strip()
+        entry_local_ip = (item.get("local_ip") or "").strip()
 
-            # Device-level disambiguation behind NAT / Shared Wi-Fi:
-            # If the jail entry is scoped to a specific device, spare any client that is not this device!
-            is_device_scoped = bool(entry_dev_id or entry_local_ip or entry_dev_name)
+        # 1. IP Matching (matches public WAN IP or private LAN IP)
+        ip_matches = False
+        if entry_ip and clean_ip and entry_ip == clean_ip:
+            ip_matches = True
+        elif entry_local_ip and clean_local_ip and entry_local_ip == clean_local_ip:
+            ip_matches = True
+        elif clean_local_ip and entry_ip == clean_local_ip:
+            ip_matches = True
+        elif entry_local_ip and clean_ip == entry_local_ip:
+            ip_matches = True
 
-            if is_device_scoped:
-                # If the jail entry is scoped to a specific device, any client that does not provide device
-                # credentials or whose credentials do not match MUST NOT be blocked by this device-scoped entry!
-                if not (clean_dev_id or clean_local_ip or clean_dev_name):
-                    continue
+        if not ip_matches:
+            continue
 
-                # 1. Match by unique device_id:
-                if entry_dev_id:
-                    if clean_dev_id:
-                        if clean_dev_id != entry_dev_id:
-                            continue  # Different device token -> SPARE THIS CLIENT!
-                    else:
-                        # Client has no device token; verify with other attributes
-                        if clean_local_ip and entry_local_ip and clean_local_ip != entry_local_ip:
-                            continue
-                        if clean_dev_name and entry_dev_name:
-                            is_entry_mob = any(k in entry_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
-                            is_curr_mob = any(k in clean_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
-                            if is_entry_mob != is_curr_mob:
-                                continue
-                        else:
-                            # Not enough info to confirm it is the banned device -> SPARE!
-                            continue
+        # 2. Strict Cross-Platform Disambiguation behind NAT / Shared Wi-Fi:
+        # A Mobile attack or ban NEVER affects a PC/Desktop!
+        # A PC/Desktop attack or ban NEVER affects a Mobile phone!
+        if entry_dev_name and clean_dev_name:
+            is_entry_mob = any(k in entry_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+            is_curr_mob = any(k in clean_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+            if is_entry_mob != is_curr_mob:
+                continue  # Different device category -> SPARE THIS CLIENT!
 
-                # 2. Match by local LAN IP:
-                if entry_local_ip and clean_local_ip:
-                    if clean_local_ip != entry_local_ip:
-                        continue  # Different local IP on the same router -> SPARE THIS CLIENT!
+        # 3. Intra-Platform LAN IP Disambiguation (e.g. two laptops on the same router):
+        if entry_local_ip and clean_local_ip and entry_local_ip != clean_local_ip:
+            continue  # Different local IP on the same router -> SPARE THIS CLIENT!
 
-                # 3. Match by device platform category (e.g. Mobile vs Laptop):
-                if entry_dev_name and clean_dev_name:
-                    is_entry_mob = any(k in entry_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
-                    is_curr_mob = any(k in clean_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
-                    if is_entry_mob != is_curr_mob:
-                        continue  # Laptop is spared if Mobile attacked, or Mobile is spared if Laptop attacked!
-
-            matched = item
-            break
+        matched = item
+        break
 
     if matched:
         is_blocked = (
@@ -1404,17 +1390,24 @@ async def set_ip_policy(payload: dict):
         if inc_id_req and item.get("incident_id") == inc_id_req:
             matched = item
             break
-        if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+        item_ip = item.get("ip", "").replace("::ffff:", "").strip()
+        item_local_ip = item.get("local_ip", "").strip()
+        if item_ip == clean_ip or (item_local_ip and item_local_ip == clean_ip):
             if dev_id and item.get("device_id") and dev_id != item.get("device_id"):
                 continue
             matched = item
             break
 
     if not matched:
+        is_lan = clean_ip.startswith("192.168.") or clean_ip.startswith("10.") or clean_ip.startswith("172.")
+        fallback_wan = getattr(traffic_watchdog, "current_attacker_ip", "") or "103.57.252.112"
+        target_dev_name = "Windows PC" if (is_lan and int(clean_ip.split(".")[-1]) < 135) else ("Android Mobile" if is_lan else "Manual Target")
         matched = {
-            "ip": clean_ip,
+            "ip": fallback_wan if is_lan else clean_ip,
+            "local_ip": clean_ip if is_lan else "",
             "device_id": dev_id,
-            "threat_level": "CRITICAL" if policy == "permanent" else "HIGH",
+            "device_name": target_dev_name,
+            "threat_level": "CRITICAL" if policy in ("permanent", "ban") else "HIGH",
             "incident_id": inc_id_req or f"INC-SRE-{random.randint(1000, 9999)}",
             "reason": reason,
             "jailed_at": get_ist_time_str(),
@@ -1439,12 +1432,18 @@ async def set_ip_policy(payload: dict):
         matched["status"] = "PERMANENTLY BANNED"
         matched["auto_release_in"] = "Permanent (Manual Revocation Required)"
         matched["threat_level"] = "CRITICAL"
+        matched.pop("released_at", None)
+        traffic_watchdog.recently_released.pop(clean_ip, None)
+        traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
         await add_log("CRITICAL", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] permanently banned by SRE team. Rule active.")
     elif policy in ("5m", "5_minutes"):
         matched["policy"] = "5_MINUTES"
         matched["status"] = "BLOCKED (5 Mins)"
         matched["auto_release_in"] = "5m 0s (5-Min Cooldown)"
         matched["threat_level"] = "HIGH"
+        matched.pop("released_at", None)
+        traffic_watchdog.recently_released.pop(clean_ip, None)
+        traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
         schedule_cooldown_task(inc_id, clean_ip, 300, "5_MINUTES", "5-Min Cooldown", matched_dev_id)
         await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 5 minutes by SRE team.")
     elif policy in ("1h", "1_hour"):
@@ -1452,6 +1451,9 @@ async def set_ip_policy(payload: dict):
         matched["status"] = "BLOCKED (1 Hour)"
         matched["auto_release_in"] = "60m 0s (1-Hour Cooldown)"
         matched["threat_level"] = "HIGH"
+        matched.pop("released_at", None)
+        traffic_watchdog.recently_released.pop(clean_ip, None)
+        traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
         schedule_cooldown_task(inc_id, clean_ip, 3600, "1_HOUR", "1-Hour Cooldown", matched_dev_id)
         await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 1 hour by SRE team.")
     elif policy in ("release", "unjail"):
