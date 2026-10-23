@@ -1147,6 +1147,63 @@ async def configure_smtp(payload: dict):
             }
         return {"success": False, "error": f"SMTP Authentication failed: {err_msg}"}
 
+# Active Cooldown & Auto-Release Background Tasks
+active_cooldown_tasks: Dict[str, asyncio.Task] = {}
+
+async def _run_cooldown_timer(incident_id: str, ip: str, total_seconds: int, policy_name: str, label: str):
+    clean_ip = ip.replace("::ffff:", "").strip()
+    try:
+        for remaining in range(total_seconds, 0, -1):
+            await asyncio.sleep(1)
+            found = False
+            for entry in jailed_ips:
+                if entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+                    found = True
+                    # Only continue countdown if policy hasn't been changed by SRE
+                    if entry.get("policy") == policy_name and (entry.get("status") == "QUARANTINED" or str(entry.get("status", "")).startswith("BLOCKED")):
+                        if remaining >= 60:
+                            mins = remaining // 60
+                            secs = remaining % 60
+                            entry["auto_release_in"] = f"{mins}m {secs}s ({label})"
+                        else:
+                            entry["auto_release_in"] = f"{remaining}s ({label})"
+                    else:
+                        return
+            if not found:
+                return
+
+        # Cooldown completed! Auto-release now
+        for entry in jailed_ips:
+            if entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+                if entry.get("policy") == policy_name:
+                    entry["status"] = "RELEASED (Self-Healed)"
+                    entry["policy"] = "RELEASED"
+                    entry["auto_release_in"] = "Remediated by SRE Cooldown"
+                    await add_log("REMEDIATED", f"[{incident_id}] {label} elapsed ({total_seconds}s). Auto-released IP {clean_ip}. Allowlist restored.")
+                    resolve_incident_callback(incident_id, f"Auto-cooldown ({label}) completed. IP unjailed.")
+                    
+                    if traffic_watchdog.current_attacker_ip == clean_ip or traffic_watchdog.last_jailed_ip == clean_ip:
+                        traffic_watchdog.defense_mode_active = False
+                        traffic_watchdog.cooldown_counter = 0
+
+    except asyncio.CancelledError:
+        pass
+    finally:
+        active_cooldown_tasks.pop(clean_ip, None)
+
+def schedule_cooldown_task(incident_id: str, ip: str, seconds: int, policy: str, label: str):
+    clean_ip = ip.replace("::ffff:", "").strip()
+    old_task = active_cooldown_tasks.get(clean_ip)
+    if old_task and not old_task.done():
+        old_task.cancel()
+    
+    try:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_run_cooldown_timer(incident_id, clean_ip, seconds, policy, label))
+        active_cooldown_tasks[clean_ip] = task
+    except RuntimeError:
+        pass
+
 @app.post("/api/security/report-threat")
 async def report_threat(payload: dict):
     """Called automatically by FinSight Gateway when an IP exceeds rate limits."""
@@ -1172,6 +1229,16 @@ async def report_threat(payload: dict):
     }
     jail_ip_callback(entry)
     await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}. Reason: {reason}")
+    
+    # Engage watchdog state and launch live 12s auto-cooldown countdown
+    if policy == "AUTO_COOLDOWN":
+        traffic_watchdog.defense_mode_active = True
+        traffic_watchdog.current_attacker_ip = ip
+        traffic_watchdog.last_jailed_ip = ip
+        traffic_watchdog.current_incident_id = incident_id
+        traffic_watchdog.cooldown_counter = 0
+        schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown")
+
     return {"success": True, "ip": ip, "incident_id": incident_id, "status": "QUARANTINED"}
 
 @app.get("/api/security/jailed-ips")
@@ -1189,10 +1256,11 @@ async def set_ip_policy(payload: dict):
     if not ip:
         return {"success": False, "error": "IP address is required"}
 
-    matched = next((item for item in jailed_ips if item["ip"] == ip), None)
+    clean_ip = ip.replace("::ffff:", "").strip()
+    matched = next((item for item in jailed_ips if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip), None)
     if not matched:
         matched = {
-            "ip": ip,
+            "ip": clean_ip,
             "threat_level": "CRITICAL" if policy == "permanent" else "HIGH",
             "incident_id": f"INC-SRE-{random.randint(1000, 9999)}",
             "reason": reason,
@@ -1205,31 +1273,44 @@ async def set_ip_policy(payload: dict):
         }
         jailed_ips.insert(0, matched)
 
+    inc_id = matched.get("incident_id") or f"INC-{random.randint(1000, 9999)}"
+
     if policy in ("permanent", "ban"):
+        old_task = active_cooldown_tasks.get(clean_ip)
+        if old_task and not old_task.done():
+            old_task.cancel()
+        active_cooldown_tasks.pop(clean_ip, None)
         matched["policy"] = "PERMANENT"
         matched["status"] = "PERMANENTLY BANNED"
         matched["auto_release_in"] = "Permanent (Manual Revocation Required)"
         matched["threat_level"] = "CRITICAL"
-        await add_log("CRITICAL", f"[FIREWALL POLICY] IP {ip} permanently banned by SRE team. Rule active.")
+        await add_log("CRITICAL", f"[FIREWALL POLICY] IP {clean_ip} permanently banned by SRE team. Rule active.")
     elif policy in ("5m", "5_minutes"):
         matched["policy"] = "5_MINUTES"
         matched["status"] = "BLOCKED (5 Mins)"
-        matched["auto_release_in"] = "5 Minutes"
+        matched["auto_release_in"] = "5m 0s (5-Min Cooldown)"
         matched["threat_level"] = "HIGH"
-        await add_log("WARN", f"[FIREWALL POLICY] IP {ip} quarantined for 5 minutes by SRE team.")
+        schedule_cooldown_task(inc_id, clean_ip, 300, "5_MINUTES", "5-Min Cooldown")
+        await add_log("WARN", f"[FIREWALL POLICY] IP {clean_ip} quarantined for 5 minutes by SRE team.")
     elif policy in ("1h", "1_hour"):
         matched["policy"] = "1_HOUR"
         matched["status"] = "BLOCKED (1 Hour)"
-        matched["auto_release_in"] = "1 Hour"
+        matched["auto_release_in"] = "60m 0s (1-Hour Cooldown)"
         matched["threat_level"] = "HIGH"
-        await add_log("WARN", f"[FIREWALL POLICY] IP {ip} quarantined for 1 hour by SRE team.")
+        schedule_cooldown_task(inc_id, clean_ip, 3600, "1_HOUR", "1-Hour Cooldown")
+        await add_log("WARN", f"[FIREWALL POLICY] IP {clean_ip} quarantined for 1 hour by SRE team.")
     elif policy in ("release", "unjail"):
+        old_task = active_cooldown_tasks.get(clean_ip)
+        if old_task and not old_task.done():
+            old_task.cancel()
+        active_cooldown_tasks.pop(clean_ip, None)
         matched["policy"] = "RELEASED"
         matched["status"] = "RELEASED (Manual Override)"
         matched["auto_release_in"] = "Released by SRE Engineer"
-        await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed IP {ip}. Allowlist restored.")
+        traffic_watchdog.defense_mode_active = False
+        await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed IP {clean_ip}. Allowlist restored.")
 
-    return {"success": True, "ip": ip, "entry": matched}
+    return {"success": True, "ip": clean_ip, "entry": matched}
 
 @app.post("/api/security/manual-block")
 async def manual_block_ip(payload: dict):
