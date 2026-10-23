@@ -250,9 +250,15 @@ function getSeedTrafficHistory() {
   for (let i = 12; i > 0; i--) {
     const d = new Date(now - i * 2000);
     const t = d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const baseline = +(2.1 + Math.random() * 0.8).toFixed(2);
     points.push({
       time: t,
-      rps: +(2.1 + Math.random() * 0.8).toFixed(2),
+      rps: baseline,
+      platform_rps: baseline,
+      threat_rps: 0.0,
+      attacker_ip: "None",
+      attacker_local_ip: "",
+      attacker_device_name: "",
       latency: 42,
       defense_active: false,
       heap_used: 20.1,

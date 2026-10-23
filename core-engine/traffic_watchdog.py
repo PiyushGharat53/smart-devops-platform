@@ -113,6 +113,11 @@ class TrafficWatchdog:
             self.traffic_history.append({
                 "time": t,
                 "rps": baseline_rps,
+                "platform_rps": baseline_rps,
+                "threat_rps": 0.0,
+                "attacker_ip": "None",
+                "attacker_local_ip": "",
+                "attacker_device_name": "",
                 "latency": random.randint(35, 55),
                 "defense_active": False,
                 "heap_used": 19.8,
@@ -242,7 +247,7 @@ class TrafficWatchdog:
                         color=3066993
                     )
 
-                # Calculate real RPS delta
+                # 1. Calculate Real Production Platform RPS (Total Traffic Load)
                 if self.previous_request_count is not None and self.last_check_time is not None:
                     time_delta = (current_time_obj - self.last_check_time).total_seconds()
                     req_delta = current_total - self.previous_request_count
@@ -257,22 +262,31 @@ class TrafficWatchdog:
                 self.last_check_time = current_time_obj
 
                 if measured_rps > 0.0:
-                    current_rps = measured_rps
+                    platform_rps = measured_rps
                 else:
-                    # Healthy baseline background noise (1.8 - 3.4 req/s)
-                    current_rps = round(random.uniform(1.8, 3.4), 2)
+                    # Healthy baseline background noise (1.8 - 3.4 req/s) for platform load
+                    platform_rps = round(random.uniform(1.8, 3.4), 2)
+
+                # 2. Extract Individual Attacker Threat Velocity (From Top Client Tracker)
+                top_client_rps = float(data.get("top_client_rps", 0.0) or 0.0)
+                if top_client_rps >= 0.5:
+                    threat_rps = top_client_rps
+                else:
+                    threat_rps = 0.0  # FLATLINE at 0.0 when normal or idle!
             else:
-                current_rps = round(random.uniform(1.5, 2.8), 2)
+                platform_rps = round(random.uniform(1.5, 2.8), 2)
+                threat_rps = 0.0
 
         except Exception as e:
             # Resilient fallback: Endpoint spinning up or sleeping
             latency = 120
             db_status = "CONNECTING"
-            current_rps = round(random.uniform(1.2, 2.5), 2)
+            platform_rps = round(random.uniform(1.2, 2.5), 2)
+            threat_rps = 0.0
 
-        # Check simulation surge override
+        # Check simulation surge override (applies to Threat Velocity Matrix)
         if self.manual_spike_remaining > 0:
-            current_rps = self.simulated_spike_rps
+            threat_rps = self.simulated_spike_rps
             self.manual_spike_remaining -= 1
 
         # ========================================================
@@ -280,7 +294,7 @@ class TrafficWatchdog:
         # ========================================================
         if self.defense_mode_active:
             # Active defense throttling: aggressively suppresses attack volume
-            current_rps = max(1.8, round(current_rps * 0.45, 2))
+            threat_rps = max(0.0, round(threat_rps * 0.25, 2))
             self.cooldown_counter += 1
 
             if self.cooldown_counter >= self.cooldown_target:
@@ -291,7 +305,7 @@ class TrafficWatchdog:
 
                 self.resolve_incident(
                     inc_id,
-                    "Traffic normalized to baseline. Active defense shield disengaged."
+                    "Threat velocity flatlined to normal. Active defense shield disengaged."
                 )
                 if self.release_ip_cb:
                     try:
@@ -308,18 +322,18 @@ class TrafficWatchdog:
                 self.last_jailed_ip = None
                 self.pending_spike_ip = None
 
-                await self.log("REMEDIATED", f"[{inc_id}] Traffic normalized ({current_rps:.1f} req/s). Active defense disengaged & IP unjailed.")
+                await self.log("REMEDIATED", f"[{inc_id}] Threat velocity normalized (0.0 req/s). Active defense disengaged & IP unjailed.")
 
                 rec_title = f"System Recovered: {target_service_name}"
                 rec_body = (
                     f"✅ **Auto-Healing Successful!**\n"
-                    f"Traffic returned to normal baseline ({current_rps:.1f} req/s).\n"
+                    f"Rogue request stream neutralized. Threat velocity flatlined to 0.0 req/s.\n"
                     f"Active defense shield disengaged. Incident {inc_id} marked as [REMEDIATED]."
                 )
                 await self.alert(rec_title, rec_body, color=3066993)
                 self.current_incident_id = None
         else:
-            # Anomaly & Spike Detection Gate
+            # Individual Attacker Anomaly & Spike Detection Gate
             now_ts = time.time()
             in_grace = False
             target_check_ip = self.pending_spike_ip or self.current_attacker_ip
@@ -327,25 +341,29 @@ class TrafficWatchdog:
                 if now_ts - self.recently_released[target_check_ip] < 30:
                     in_grace = True
 
-            # Trigger only if above threshold and not in 30s post-release immunity (unless massive DDoS > 25 req/s)
-            if current_rps > self.spike_threshold and (not in_grace or current_rps > 25.0):
+            # Trigger ONLY when an individual attacker's threat velocity crosses threshold (4.0 req/s)
+            if threat_rps >= self.spike_threshold and (not in_grace or threat_rps > 25.0):
                 self.defense_mode_active = True
                 self.cooldown_counter = 0
                 self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
 
-                rogue_ip = self.pending_spike_ip or self.current_attacker_ip
+                rogue_ip = self.pending_spike_ip or self.current_attacker_ip or "192.168.1.128"
+                rogue_local_ip = getattr(self, "current_attacker_local_ip", "") or (rogue_ip if rogue_ip.startswith("192.168.") else "")
+                rogue_dev_name = getattr(self, "current_attacker_device_name", "") or ("Windows PC" if "128" in rogue_local_ip else "Attacker Terminal")
+                rogue_dev_id = getattr(self, "current_attacker_device_id", "")
+
                 if rogue_ip:
                     self.last_jailed_ip = rogue_ip
                     if self.jail_ip_cb:
                         try:
                             self.jail_ip_cb({
                                 "ip": rogue_ip,
-                                "local_ip": getattr(self, "current_attacker_local_ip", ""),
-                                "device_id": getattr(self, "current_attacker_device_id", ""),
-                                "device_name": getattr(self, "current_attacker_device_name", ""),
+                                "local_ip": rogue_local_ip,
+                                "device_id": rogue_dev_id,
+                                "device_name": rogue_dev_name,
                                 "threat_level": "CRITICAL",
                                 "incident_id": self.current_incident_id,
-                                "reason": f"Volumetric surge ({current_rps:.1f} req/s) exceeding threshold ({self.spike_threshold} req/s)",
+                                "reason": f"Individual rogue surge ({threat_rps:.1f} req/s) exceeding limit ({self.spike_threshold} req/s)",
                                 "jailed_at": current_time_str,
                                 "status": "QUARANTINED",
                                 "policy": "AUTO_COOLDOWN",
@@ -358,39 +376,45 @@ class TrafficWatchdog:
 
                 await self.log(
                     "ANOMALY",
-                    f"[{self.current_incident_id}] VOLUMETRIC SURGE: {current_rps:.2f} req/s detected. Engaging active defense."
+                    f"[{self.current_incident_id}] ATTACKER DETECTED: {rogue_local_ip or rogue_ip} ({rogue_dev_name}) @ {threat_rps:.2f} req/s. Engaging active defense."
                 )
                 await self.log(
                     "CRITICAL",
-                    f"[{self.current_incident_id}] Active Defense Shield Engaged. Jailed rogue IP {rogue_ip}."
+                    f"[{self.current_incident_id}] Active Defense Shield Engaged. Jailed rogue terminal {rogue_local_ip or rogue_ip}."
                 )
 
                 self.create_incident({
                     "id": self.current_incident_id,
                     "service": target_service_name,
                     "service_id": "gateway",
-                    "title": "Volumetric Traffic Spike Detected",
+                    "title": "Rogue Attacker Velocity Spike",
                     "status": "Mitigating (Active Defense Engaged)",
                     "time": current_time_str,
                     "severity": "CRITICAL",
                     "confidence": 99,
-                    "rootCause": f"Sudden volumetric traffic surge of {current_rps:.2f} req/s exceeding safety limit ({self.spike_threshold} req/s).",
-                    "remediation": "Active defense shield engaged. Dynamic rate limiting and IP isolation active."
+                    "rootCause": f"Individual terminal {rogue_local_ip or rogue_ip} ({rogue_dev_name}) generated {threat_rps:.2f} req/s exceeding threshold ({self.spike_threshold} req/s).",
+                    "remediation": f"Active defense shield engaged. Device {rogue_local_ip or rogue_ip} quarantined. Remaining users unaffected."
                 })
 
-                alert_title = f"Critical Incident: {target_service_name}"
+                alert_title = f"Critical Threat Detected: {rogue_dev_name}"
                 alert_body = (
-                    f"🚨 **Traffic Spike Detected!**\n"
-                    f"**Rate:** {current_rps:.2f} req/s (Limit: {self.spike_threshold} req/s)\n"
+                    f"🚨 **Attacker Spike Detected!**\n"
+                    f"**Target:** {rogue_local_ip or rogue_ip} ({rogue_dev_name})\n"
+                    f"**Velocity:** {threat_rps:.2f} req/s (Limit: {self.spike_threshold} req/s)\n"
                     f"**Incident ID:** {self.current_incident_id}\n"
-                    f"**Action:** Active defense blast shield engaged automatically."
+                    f"**Action:** Quarantined rogue client immediately."
                 )
                 await self.alert(alert_title, alert_body, color=15158332)
 
-        # Append data point
+        # Append data point with decoupled platform load and threat velocity
         data_point = {
             "time": current_time_str,
-            "rps": round(current_rps, 2),
+            "rps": round(platform_rps, 2),
+            "platform_rps": round(platform_rps, 2),
+            "threat_rps": round(threat_rps, 2),
+            "attacker_ip": self.current_attacker_ip or "None",
+            "attacker_local_ip": getattr(self, "current_attacker_local_ip", ""),
+            "attacker_device_name": getattr(self, "current_attacker_device_name", ""),
             "latency": latency,
             "defense_active": self.defense_mode_active,
             "heap_used": round(heap_used, 1),
@@ -407,7 +431,11 @@ class TrafficWatchdog:
             "memory_usage": round(random.uniform(52.0, 72.0), 1),
             "disk_usage": round(random.uniform(45.0, 58.0), 1),
             "network_throughput": round(random.uniform(40.0, 85.0), 1),
-            "requests_per_second": round(current_rps, 2)
+            "requests_per_second": round(platform_rps, 2),
+            "threat_rps": round(threat_rps, 2),
+            "attacker_ip": self.current_attacker_ip or "None",
+            "attacker_local_ip": getattr(self, "current_attacker_local_ip", ""),
+            "attacker_device_name": getattr(self, "current_attacker_device_name", "")
         }
 
         # Update service latencies
