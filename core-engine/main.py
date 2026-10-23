@@ -317,9 +317,21 @@ smtp_config: Dict[str, Any] = {
     "pass": os.getenv("SMTP_PASSWORD", "")
 }
 
-async def send_secops_email(recipient: str, target_ip: str, incident_id: str, reason: str, policy: str) -> tuple:
+async def send_secops_email(
+    recipient: str, 
+    target_ip: str, 
+    incident_id: str, 
+    reason: str, 
+    policy: str,
+    local_ip: str = "",
+    device_name: str = "",
+    device_id: str = "",
+    velocity_rps: float = 0.0,
+    burst_count: int = 0
+) -> tuple:
     """Delivers real email via Resend HTTPS API (Port 443) or SMTP, or records to MongoDB audit trail."""
-    subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine Enforced on IP: {target_ip}"
+    dev_str = f"[{device_name}] " if device_name else ""
+    subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine: {dev_str}{local_ip or target_ip}"
     
     html_content = f"""
     <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
@@ -334,8 +346,20 @@ async def send_secops_email(recipient: str, target_ip: str, incident_id: str, re
           <td style="padding: 10px 16px; color: #38bdf8; font-family: monospace;">{incident_id}</td>
         </tr>
         <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Quarantined IP:</td>
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Terminal Device:</td>
+          <td style="padding: 10px 16px; color: #facc15; font-weight: bold;">{device_name or "Client Terminal"} ({device_id or "Auto-ID"})</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Local LAN IP:</td>
+          <td style="padding: 10px 16px; color: #67e8f9; font-family: monospace; font-weight: bold;">{local_ip or "Same as Gateway"}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Quarantined WAN IP:</td>
           <td style="padding: 10px 16px; color: #f87171; font-family: monospace; font-weight: bold;">{target_ip}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Threat Velocity:</td>
+          <td style="padding: 10px 16px; color: #f87171; font-weight: bold;">{velocity_rps:.2f} req/s (Burst Count: {burst_count})</td>
         </tr>
         <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
           <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Threat Reason:</td>
@@ -362,7 +386,10 @@ async def send_secops_email(recipient: str, target_ip: str, incident_id: str, re
     text_content = f"""
     [Sentinel SecOps Alert] Active Defense Quarantine Enforced
     Incident: {incident_id}
-    Rogue IP: {target_ip}
+    Terminal: {device_name or "Client Terminal"} ({device_id or "Auto-ID"})
+    Local IP: {local_ip or "Same as Gateway"}
+    Rogue WAN IP: {target_ip}
+    Velocity: {velocity_rps:.2f} req/s ({burst_count} requests in burst)
     Reason: {reason}
     Policy: {policy}
     Time: {get_ist_time_str()} IST
@@ -486,11 +513,16 @@ def jail_ip_callback(ip_doc: dict):
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(dispatch_abuse_email({
-                    "ip": ip_doc["ip"],
+                    "ip": ip_doc.get("ip"),
+                    "local_ip": ip_doc.get("local_ip", ""),
+                    "device_name": ip_doc.get("device_name", ""),
+                    "device_id": ip_doc.get("device_id", ""),
                     "incident_id": ip_doc.get("incident_id", "INC-AUTO"),
                     "recipient": secops_recipient_email,
                     "reason": ip_doc.get("reason", "Volumetric threshold surge"),
-                    "policy": ip_doc.get("policy", "QUARANTINED")
+                    "policy": ip_doc.get("policy", "QUARANTINED"),
+                    "velocity_rps": ip_doc.get("velocity_rps", 0.0),
+                    "burst_count": ip_doc.get("requests_blocked", 0)
                 }))
             except RuntimeError:
                 pass
@@ -504,11 +536,16 @@ def jail_ip_callback(ip_doc: dict):
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(dispatch_abuse_email({
-            "ip": ip_doc["ip"],
+            "ip": ip_doc.get("ip"),
+            "local_ip": ip_doc.get("local_ip", ""),
+            "device_name": ip_doc.get("device_name", ""),
+            "device_id": ip_doc.get("device_id", ""),
             "incident_id": ip_doc.get("incident_id", "INC-AUTO"),
             "recipient": secops_recipient_email,
             "reason": ip_doc.get("reason", "Volumetric threshold surge"),
-            "policy": ip_doc.get("policy", "QUARANTINED")
+            "policy": ip_doc.get("policy", "QUARANTINED"),
+            "velocity_rps": ip_doc.get("velocity_rps", 0.0),
+            "burst_count": ip_doc.get("requests_blocked", 0)
         }))
     except RuntimeError:
         pass
@@ -534,7 +571,7 @@ traffic_watchdog = TrafficWatchdog(
     jail_ip_cb=jail_ip_callback,
     release_ip_cb=release_ip_callback,
     target_url=FINSIGHT_API_URL,
-    spike_threshold=1.0
+    spike_threshold=6.0
 )
 
 # Background Health Checker
@@ -1681,18 +1718,36 @@ async def clear_logs_endpoint():
 async def dispatch_abuse_email(payload: dict = None):
     global secops_recipient_email
     target_ip = (payload or {}).get("ip", "115.99.142.68")
+    local_ip = (payload or {}).get("local_ip", "")
+    device_name = (payload or {}).get("device_name", "")
+    device_id = (payload or {}).get("device_id", "")
     incident_id = (payload or {}).get("incident_id", f"INC-{random.randint(1000, 9999)}")
     recipient = (payload or {}).get("recipient") or secops_recipient_email
     reason = (payload or {}).get("reason", "Volumetric surge exceeding rate threshold")
     policy = (payload or {}).get("policy", "QUARANTINED (Active Defense)")
+    velocity_rps = float((payload or {}).get("velocity_rps", 0.0) or 0.0)
+    burst_count = int((payload or {}).get("burst_count", 0) or 0)
 
-    success, status_msg = await send_secops_email(recipient, target_ip, incident_id, reason, policy)
+    success, status_msg = await send_secops_email(
+        recipient=recipient,
+        target_ip=target_ip,
+        incident_id=incident_id,
+        reason=reason,
+        policy=policy,
+        local_ip=local_ip,
+        device_name=device_name,
+        device_id=device_id,
+        velocity_rps=velocity_rps,
+        burst_count=burst_count
+    )
 
-    await add_log("INFO", f"[SECOPS DISPATCH] Security alert for {target_ip} sent to {recipient}. Status: {status_msg}")
+    await add_log("INFO", f"[SECOPS AUTO-DISPATCH] Alert for {device_name or local_ip or target_ip} sent to {recipient}. Status: {status_msg}")
     await send_dispatch_alert(
         f"SecOps Alert Dispatched ({incident_id})",
-        f"📧 **Automated Abuse Report Dispatched**\n"
-        f"**Target Rogue IP:** `{target_ip}`\n"
+        f"📧 **Autonomous Abuse Report Dispatched**\n"
+        f"**Target Device:** `{device_name or 'Terminal'}`\n"
+        f"**Local IP:** `{local_ip or 'N/A'}`\n"
+        f"**Gateway WAN IP:** `{target_ip}`\n"
         f"**Recipient:** `{recipient}`\n"
         f"**Status:** {status_msg}\n"
         f"**Policy:** {policy}",
@@ -1701,6 +1756,8 @@ async def dispatch_abuse_email(payload: dict = None):
     return {
         "message": f"Security incident notification processed for {recipient}",
         "ip": target_ip,
+        "local_ip": local_ip,
+        "device_name": device_name,
         "incident_id": incident_id,
         "dispatched_to": recipient,
         "status_detail": status_msg,

@@ -45,7 +45,7 @@ class TrafficWatchdog:
         jail_ip_cb: Optional[Callable] = None,
         release_ip_cb: Optional[Callable] = None,
         target_url: Optional[str] = None,
-        spike_threshold: float = 1.0,
+        spike_threshold: float = 6.0,
         *args,
         **kwargs
     ):
@@ -105,20 +105,19 @@ class TrafficWatchdog:
         }
 
     def _seed_initial_history(self):
-        """Seeds smooth baseline points so the dashboard loads beautifully immediately."""
+        """Seeds smooth zero-baseline points so the dashboard loads cleanly without dummy traffic."""
         now_dt = datetime.now(IST)
         for i in range(12, 0, -1):
             t = (now_dt - timedelta(seconds=i * 2)).strftime("%H:%M:%S")
-            baseline_rps = round(random.uniform(1.8, 3.2), 2)
             self.traffic_history.append({
                 "time": t,
-                "rps": baseline_rps,
-                "platform_rps": baseline_rps,
+                "rps": 0.0,
+                "platform_rps": 0.0,
                 "threat_rps": 0.0,
                 "attacker_ip": "None",
                 "attacker_local_ip": "",
                 "attacker_device_name": "",
-                "latency": random.randint(35, 55),
+                "latency": 42,
                 "defense_active": False,
                 "heap_used": 19.8,
                 "heap_total": 22.4,
@@ -317,10 +316,10 @@ class TrafficWatchdog:
                 self.last_check_time = current_time_obj
 
                 if measured_rps > 0.0:
-                    platform_rps = measured_rps
+                    platform_rps = round(measured_rps, 2)
                 else:
-                    # Healthy baseline background noise (1.8 - 3.4 req/s) for platform load
-                    platform_rps = round(random.uniform(1.8, 3.4), 2)
+                    # True production telemetry: 0.0 req/s when no one is browsing
+                    platform_rps = 0.0
 
                 # 2. Extract Individual Attacker Threat Velocity (From Top Client Tracker)
                 top_client_rps = float(data.get("top_client_rps", 0.0) or 0.0)
@@ -329,14 +328,14 @@ class TrafficWatchdog:
                 else:
                     threat_rps = 0.0  # FLATLINE at 0.0 when normal or idle!
             else:
-                platform_rps = round(random.uniform(1.5, 2.8), 2)
+                platform_rps = 0.0
                 threat_rps = 0.0
 
         except Exception as e:
             # Resilient fallback: Endpoint spinning up or sleeping
             latency = 120
             db_status = "CONNECTING"
-            platform_rps = round(random.uniform(1.2, 2.5), 2)
+            platform_rps = 0.0
             threat_rps = 0.0
 
         # Check simulation surge override (applies to Threat Velocity Matrix)

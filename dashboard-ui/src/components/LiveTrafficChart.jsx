@@ -4,8 +4,6 @@ import {
     Shield, 
     ShieldAlert, 
     Activity, 
-    Zap, 
-    Flame, 
     Loader2, 
     Database, 
     Cpu, 
@@ -83,12 +81,9 @@ function ThreatTooltip({ active, payload, label }) {
 
 export default function LiveTrafficChart({
     trafficHistory = [],
-    defenseModeActive = false,
-    onSimulateSpike = null,
-    onRealBurst = null,
-    isSimulating = false
+    defenseModeActive = false
 }) {
-    const SPIKE_LIMIT = 1.0;
+    const SPIKE_LIMIT = 6.0;
     const latestData = trafficHistory.length > 0 ? trafficHistory[trafficHistory.length - 1] : {};
 
     const currentPlatformRps = latestData.platform_rps !== undefined ? latestData.platform_rps : (latestData.rps || 0);
@@ -135,58 +130,6 @@ export default function LiveTrafficChart({
                 </div>
                 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    {/* Action buttons for live testing */}
-                    {onSimulateSpike && (
-                        <button
-                            onClick={onSimulateSpike}
-                            disabled={isSimulating || defenseModeActive}
-                            title="Injects a simulated surge (>14 RPS) to test anomaly detection and isolated client quarantine"
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                padding: '0.45rem 0.85rem',
-                                borderRadius: 8,
-                                border: '1px solid rgba(245, 158, 11, 0.4)',
-                                background: 'rgba(245, 158, 11, 0.12)',
-                                color: '#fde68a',
-                                fontSize: 11.5,
-                                fontWeight: 600,
-                                cursor: (isSimulating || defenseModeActive) ? 'not-allowed' : 'pointer',
-                                opacity: (isSimulating || defenseModeActive) ? 0.6 : 1,
-                                transition: 'all 0.2s ease'
-                            }}
-                        >
-                            {isSimulating ? <Loader2 size={13} className="sso-spin" /> : <Zap size={13} color="#f59e0b" />}
-                            Simulate Attack Surge (14.5 RPS)
-                        </button>
-                    )}
-
-                    {onRealBurst && (
-                        <button
-                            onClick={onRealBurst}
-                            disabled={isSimulating}
-                            title="Dispatches 25 real HTTP requests to FinSight backend to test rate limiting (HTTP 429)"
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                padding: '0.45rem 0.85rem',
-                                borderRadius: 8,
-                                border: '1px solid rgba(239, 68, 68, 0.4)',
-                                background: 'rgba(239, 68, 68, 0.12)',
-                                color: '#fca5a5',
-                                fontSize: 11.5,
-                                fontWeight: 600,
-                                cursor: isSimulating ? 'not-allowed' : 'pointer',
-                                transition: 'all 0.2s ease'
-                            }}
-                        >
-                            <Flame size={13} color="#ef4444" />
-                            Real HTTP Burst (25 Reqs)
-                        </button>
-                    )}
-
                     {/* Defense Mode Badge */}
                     <div style={{
                         display: 'flex',

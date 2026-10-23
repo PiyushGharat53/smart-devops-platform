@@ -1063,9 +1063,6 @@ export default function App() {
         <LiveTrafficChart 
             trafficHistory={trafficHistory} 
             defenseModeActive={defenseModeActive} 
-            onSimulateSpike={handleSimulateSpike}
-            onRealBurst={handleRealBurst}
-            isSimulating={isSimulating}
         />
 
         {/* 2 & 5. ACTIVE DEFENSE IP QUARANTINE JAIL & ROGUE TRAFFIC RESPONSE */}
@@ -1195,22 +1192,6 @@ export default function App() {
               >
                 <KeyRound size={11} color="#a5b4fc" />
                 <span>{smtpConnected ? "SMTP Settings" : "🔑 Connect Gmail"}</span>
-              </button>
-
-              <button
-                onClick={() => handleDispatchSecOpsEmail({
-                  ip: clientIp || "115.99.142.68",
-                  incident_id: "TEST-ALERT",
-                  reason: "Live SRE Manual Verification Probe",
-                  status: "VERIFIED"
-                })}
-                className="sso-btn"
-                style={{
-                  fontSize: 11, padding: "0.3rem 0.65rem", borderRadius: 6,
-                  background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#e2e8f0"
-                }}
-              >
-                Send Test Alert
               </button>
             </div>
           </div>
@@ -1471,28 +1452,18 @@ export default function App() {
                         <span>Ban</span>
                       </button>
 
-                      {/* Independent per-row Dispatch SecOps Alert */}
-                      <button
-                        onClick={() => handleDispatchSecOpsEmail(entry)}
-                        disabled={isRowDispatching}
-                        className="sso-btn"
-                        title="Dispatch automated SecOps Incident Notice to technical team & ISP abuse desk"
+                      {/* Autonomous SecOps Dispatch Status Indicator */}
+                      <div
+                        title={`Autonomous SecOps incident alert automatically dispatched to ${recipientEmail || 'technical-team@finsight.io'}`}
                         style={{
-                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.7rem",
-                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(245,158,11,0.35)",
-                          background: isRowDispatched ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.12)",
-                          color: isRowDispatched ? "#86efac" : "#fde68a"
+                          display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.65rem",
+                          borderRadius: 6, fontSize: 11, border: "1px solid rgba(34,197,94,0.35)",
+                          background: "rgba(34,197,94,0.12)", color: "#86efac", fontWeight: 500
                         }}
                       >
-                        {isRowDispatching ? (
-                          <Loader2 size={11} className="sso-spin" />
-                        ) : isRowDispatched ? (
-                          <CheckCircle2 size={11} color="#86efac" />
-                        ) : (
-                          <Mail size={11} color="#f59e0b" />
-                        )}
-                        <span>{isRowDispatched ? "Dispatched" : "Dispatch Alert"}</span>
-                      </button>
+                        <CheckCircle2 size={11} color="#86efac" />
+                        <span>Auto-Dispatched</span>
+                      </div>
                     </div>
                   </div>
                 );
