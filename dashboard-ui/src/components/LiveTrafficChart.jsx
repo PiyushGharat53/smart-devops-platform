@@ -88,7 +88,7 @@ export default function LiveTrafficChart({
     onRealBurst = null,
     isSimulating = false
 }) {
-    const SPIKE_LIMIT = 2.0;
+    const SPIKE_LIMIT = 1.0;
     const latestData = trafficHistory.length > 0 ? trafficHistory[trafficHistory.length - 1] : {};
 
     const currentPlatformRps = latestData.platform_rps !== undefined ? latestData.platform_rps : (latestData.rps || 0);
