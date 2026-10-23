@@ -212,6 +212,125 @@ async def broadcast_telemetry_now():
         active_websockets.discard(ws)
 
 # ==========================================
+# SecOps & Outlook Delivery Configuration
+# ==========================================
+secops_recipient_email: str = "secops-incident-team@finsight.io"
+jailed_ips: List[Dict[str, Any]] = []
+
+# Dynamic SMTP & Cloud HTTPS Email Configuration (Resend, Brevo, Gmail SMTP)
+smtp_config: Dict[str, Any] = {
+    "provider": os.getenv("EMAIL_PROVIDER", "auto"),
+    "resend_key": os.getenv("RESEND_API_KEY", ""),
+    "brevo_key": os.getenv("BREVO_API_KEY", ""),
+    "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
+    "port": int(os.getenv("SMTP_PORT", 587)),
+    "user": os.getenv("SMTP_USER", ""),
+    "pass": os.getenv("SMTP_PASSWORD", "")
+}
+
+async def send_sre_email(subject: str, html_content: str, text_content: str = "", recipient: str = None) -> tuple:
+    """Delivers real SRE alert email to Microsoft Outlook via Resend HTTPS API (Port 443) or SMTP."""
+    global secops_recipient_email, smtp_config, sentinel_db, mongo_connected
+    effective_recipient = recipient or secops_recipient_email
+    if not effective_recipient or "@finsight.io" in effective_recipient:
+        if smtp_config.get("user") and "@" in smtp_config.get("user"):
+            effective_recipient = smtp_config["user"]
+    if not effective_recipient or "@" not in effective_recipient:
+        effective_recipient = "gharatpiyush63@gmail.com"
+
+    # Fallback: Reload from MongoDB Atlas if container was restarted and in-memory key is missing
+    if not smtp_config.get("resend_key") and sentinel_db is not None and mongo_connected:
+        try:
+            doc = await sentinel_db["settings"].find_one({"_id": "smtp_config"})
+            if doc and doc.get("smtp_config", {}).get("resend_key"):
+                smtp_config.update(doc["smtp_config"])
+        except Exception:
+            pass
+
+    # 1. First Priority: Resend HTTPS API (Port 443 - 100% works on Render Cloud)
+    if smtp_config.get("resend_key"):
+        try:
+            def _send_resend():
+                import urllib.request
+                req = urllib.request.Request(
+                    "https://api.resend.com/emails",
+                    data=json.dumps({
+                        "from": "Sentinel SmartOps <onboarding@resend.dev>",
+                        "to": [effective_recipient],
+                        "subject": subject,
+                        "html": html_content
+                    }).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {smtp_config['resend_key']}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Sentinel-SmartOps/2.0"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _send_resend)
+            return True, f"Delivered via Resend Cloud API (HTTPS) to {effective_recipient} [ID: {res.get('id', 'ok')}]"
+        except Exception as e:
+            return False, f"Resend API Error: {str(e)}"
+
+    # 2. Second Priority: Brevo HTTPS API (Port 443)
+    if smtp_config.get("brevo_key"):
+        try:
+            def _send_brevo():
+                import urllib.request
+                req = urllib.request.Request(
+                    "https://api.brevo.com/v3/smtp/email",
+                    data=json.dumps({
+                        "sender": {"name": "Sentinel SmartOps", "email": "alerts@sentinelsmartops.io"},
+                        "to": [{"email": effective_recipient}],
+                        "subject": subject,
+                        "htmlContent": html_content
+                    }).encode("utf-8"),
+                    headers={
+                        "api-key": smtp_config["brevo_key"],
+                        "Content-Type": "application/json"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _send_brevo)
+            return True, f"Delivered via Brevo Cloud API (HTTPS) to {effective_recipient}"
+        except Exception as e:
+            return False, f"Brevo API Error: {str(e)}"
+
+    # 3. Third Priority: Standard SMTP (Ports 587/465)
+    smtp_user = smtp_config.get("user")
+    smtp_pass = smtp_config.get("pass")
+    smtp_host = smtp_config.get("host", "smtp.gmail.com")
+    smtp_port = smtp_config.get("port", 587)
+
+    if smtp_user and smtp_pass:
+        try:
+            def _sync_send():
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = f"Sentinel SmartOps <{smtp_user}>"
+                msg["To"] = effective_recipient
+                msg.attach(MIMEText(text_content or html_content, "plain"))
+                msg.attach(MIMEText(html_content, "html"))
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=8) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(smtp_user, [effective_recipient], msg.as_string())
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _sync_send)
+            return True, f"Delivered via SMTP ({smtp_host}) to {effective_recipient}"
+        except Exception as e:
+            err_str = str(e)
+            if "Network is unreachable" in err_str or "101" in err_str:
+                return False, "Render Free Cloud blocks raw outbound Port 587. Please use a free Resend API Key (re_...) from resend.com for HTTPS Port 443 delivery."
+            return False, f"SMTP Error: {err_str}"
+
+    return False, "Render Cloud Free blocks Port 587. Resend Cloud API Key (starts with re_) required to deliver live emails to Outlook."
+
+# ==========================================
 # Helper Utilities & Callbacks
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
@@ -261,6 +380,136 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
                     await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
         except Exception as e:
             await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
+
+    # 3. Microsoft Outlook Enterprise Email Dispatch (Port 443 HTTPS via Resend)
+    # Directly routes all incident alerts into your Microsoft Outlook Inbox!
+    try:
+        clean_desc = description.replace("**", "").replace("`", "")
+        hex_color = f"#{color:06x}" if isinstance(color, int) else "#ef4444"
+        badge_text = "RESOLVED" if color == 3066993 else "CRITICAL SRE ALERT"
+        badge_bg = "rgba(34,197,94,0.18)" if color == 3066993 else "rgba(239,68,68,0.18)"
+        badge_color = "#86efac" if color == 3066993 else "#fca5a5"
+        
+        email_html = f"""
+        <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+            <h2 style="color: {hex_color}; margin: 0; font-size: 18px;">🛡️ Sentinel SmartOps SRE Alert</h2>
+            <span style="background: rgba(0,120,212,0.18); border: 1px solid #0078d4; color: #60a5fa; font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 9999px;">
+              📫 Microsoft Outlook SRE Center
+            </span>
+          </div>
+          
+          <div style="margin-bottom: 16px;">
+            <span style="background: {badge_bg}; color: {badge_color}; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 4px; text-transform: uppercase;">
+              {badge_text}
+            </span>
+            <h3 style="color: #ffffff; margin: 8px 0 4px 0; font-size: 16px;">{title}</h3>
+            <p style="color: #cbd5e1; font-size: 13.5px; margin: 0; line-height: 1.5;">{clean_desc}</p>
+          </div>
+
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: rgba(255,255,255,0.03); border-radius: 8px;">
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+              <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold; width: 140px;">Incident Target:</td>
+              <td style="padding: 10px 16px; color: #38bdf8; font-weight: bold;">FinSight Production / Autonomous SRE</td>
+            </tr>
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+              <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Timestamp (IST):</td>
+              <td style="padding: 10px 16px; color: #34d399;">{get_ist_time_str()} (Mumbai, India)</td>
+            </tr>
+            <tr>
+              <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Remediation:</td>
+              <td style="padding: 10px 16px; color: #facc15;">Autonomous SRE Guardrail Enforced</td>
+            </tr>
+          </table>
+
+          <p style="font-size: 12px; color: #6b7280; margin-top: 20px;">Sentinel SmartOps Autonomous DevOps &amp; SRE Incident Center • Microsoft Outlook Dispatch</p>
+        </div>
+        """
+        if "pre-flight gate blocked" not in title.lower() and "security gate violation" not in title.lower() and "secops alert dispatched" not in title.lower():
+            await send_sre_email(
+                subject=f"🚨 [Sentinel SRE Alert] {title}",
+                html_content=email_html,
+                text_content=f"{title}\n{clean_desc}\nTime: {get_ist_time_str()} IST"
+            )
+    except Exception as ex:
+        print(f"[OUTLOOK DISPATCH EMAIL WARN] {ex}")
+
+async def send_pipeline_alert_to_outlook(
+    incident_id: str,
+    commit_hash: str,
+    author: str,
+    repo_name: str,
+    gate_name: str,
+    failure_reason: str,
+    remediation: str
+):
+    """Dispatches a formatted SRE Pre-Flight Gate Blocked card directly to Microsoft Outlook."""
+    subject = f"🚨 [Sentinel CI/CD Alert] Pre-Flight Gate Blocked: [{author}] Commit {commit_hash[:7]}"
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+        <h2 style="color: #ef4444; margin: 0; font-size: 18px;">🛑 Sentinel CI/CD Pre-Flight Gate Blocked</h2>
+        <span style="background: rgba(0,120,212,0.18); border: 1px solid #0078d4; color: #60a5fa; font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 9999px;">
+          📫 Microsoft Outlook SRE Incident
+        </span>
+      </div>
+      <p style="color: #9ca3af; font-size: 14px;">An automated quality gate in <code>.sentinel-config.yml</code> failed during pre-flight validation. The release was halted to shield production from regression.</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: rgba(255,255,255,0.03); border-radius: 8px;">
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold; width: 160px;">Incident ID:</td>
+          <td style="padding: 10px 16px; color: #38bdf8; font-family: monospace; font-weight: bold;">{incident_id}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Pushed By (Engineer):</td>
+          <td style="padding: 10px 16px; color: #facc15; font-weight: bold;">{author}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Git Commit Hash:</td>
+          <td style="padding: 10px 16px; color: #c084fc; font-family: monospace; font-weight: bold;">{commit_hash}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Target Repository:</td>
+          <td style="padding: 10px 16px; color: #cbd5e1; font-family: monospace;">{repo_name}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Failed Quality Gate:</td>
+          <td style="padding: 10px 16px; color: #f87171; font-weight: bold;">{gate_name}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Failure Reason:</td>
+          <td style="padding: 10px 16px; color: #fde68a;">{failure_reason}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Remediation Action:</td>
+          <td style="padding: 10px 16px; color: #86efac; font-weight: bold;">{remediation}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Timestamp (IST):</td>
+          <td style="padding: 10px 16px; color: #34d399;">{get_ist_time_str()} (Mumbai, India)</td>
+        </tr>
+      </table>
+      
+      <div style="padding: 12px; background: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; border-radius: 4px; margin-bottom: 20px;">
+        <strong style="color: #fca5a5;">DevOps Enforcement:</strong> Release denied. Production containers remain 100% operational on previous stable build.
+      </div>
+      
+      <p style="font-size: 12px; color: #6b7280; margin-top: 24px;">Sentinel SmartOps Autonomous CI/CD Gatekeeper • Microsoft Outlook Enterprise Alert</p>
+    </div>
+    """
+    text_content = f"""
+    [Sentinel CI/CD Alert] Pre-Flight Gate Blocked
+    Incident: {incident_id}
+    Engineer: {author}
+    Commit: {commit_hash}
+    Gate: {gate_name}
+    Reason: {failure_reason}
+    Action: {remediation}
+    Time: {get_ist_time_str()} IST
+    """
+    success, status_msg = await send_sre_email(subject, html_content, text_content)
+    await add_log("INFO" if success else "WARNING", f"[{incident_id}] [OUTLOOK CI/CD DISPATCH] Gate failure incident card sent to {secops_recipient_email}. Status: {status_msg}")
+    return success, status_msg
 
 async def add_log(level: str, msg: str):
     time_str = get_ist_time_str()
@@ -340,22 +589,6 @@ def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
         loop.create_task(resolve_incident_in_mongo(incident_id, note))
     except RuntimeError:
         pass
-
-# Active Defense IP Quarantine Jail State & SecOps Alert Configuration
-secops_recipient_email: str = "secops-incident-team@finsight.io"
-
-jailed_ips: List[Dict[str, Any]] = []
-
-# Dynamic SMTP & Cloud HTTPS Email Configuration (Resend, Brevo, Gmail SMTP)
-smtp_config: Dict[str, Any] = {
-    "provider": os.getenv("EMAIL_PROVIDER", "auto"),
-    "resend_key": os.getenv("RESEND_API_KEY", ""),
-    "brevo_key": os.getenv("BREVO_API_KEY", ""),
-    "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
-    "port": int(os.getenv("SMTP_PORT", 587)),
-    "user": os.getenv("SMTP_USER", ""),
-    "pass": os.getenv("SMTP_PASSWORD", "")
-}
 
 async def send_secops_email(
     recipient: str, 
@@ -445,110 +678,7 @@ async def send_secops_email(
     Time: {get_ist_time_str()} IST
     Action: HTTP 429 Challenge Dispatched & Quarantined
     """
-
-    # 1. First Priority: Resend HTTPS API (Port 443 - 100% works on Render Cloud)
-    if smtp_config.get("resend_key"):
-        try:
-            def _send_resend():
-                import urllib.request
-                req = urllib.request.Request(
-                    "https://api.resend.com/emails",
-                    data=json.dumps({
-                        "from": "Sentinel SmartOps <onboarding@resend.dev>",
-                        "to": [effective_recipient],
-                        "subject": subject,
-                        "html": html_content
-                    }).encode("utf-8"),
-                    headers={
-                        "Authorization": f"Bearer {smtp_config['resend_key']}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "Sentinel-SmartOps/2.0"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            loop = asyncio.get_running_loop()
-            res = await loop.run_in_executor(None, _send_resend)
-            return True, f"Delivered via Resend Cloud API (HTTPS) to {effective_recipient} [ID: {res.get('id', 'ok')}]"
-        except Exception as e:
-            return False, f"Resend API Error: {str(e)}"
-
-    # 2. Second Priority: Brevo HTTPS API (Port 443)
-    if smtp_config.get("brevo_key"):
-        try:
-            def _send_brevo():
-                import urllib.request
-                req = urllib.request.Request(
-                    "https://api.brevo.com/v3/smtp/email",
-                    data=json.dumps({
-                        "sender": {"name": "Sentinel SmartOps", "email": "alerts@sentinelsmartops.io"},
-                        "to": [{"email": effective_recipient}],
-                        "subject": subject,
-                        "htmlContent": html_content
-                    }).encode("utf-8"),
-                    headers={
-                        "api-key": smtp_config["brevo_key"],
-                        "Content-Type": "application/json"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _send_brevo)
-            return True, f"Delivered via Brevo Cloud API (HTTPS) to {effective_recipient}"
-        except Exception as e:
-            return False, f"Brevo API Error: {str(e)}"
-
-    # 3. Third Priority: Standard SMTP (Ports 587/465)
-    smtp_user = smtp_config.get("user")
-    smtp_pass = smtp_config.get("pass")
-    smtp_host = smtp_config.get("host", "smtp.gmail.com")
-    smtp_port = smtp_config.get("port", 587)
-    
-    if smtp_user and smtp_pass:
-        try:
-            def _sync_send():
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = subject
-                msg["From"] = f"Sentinel SmartOps <{smtp_user}>"
-                msg["To"] = effective_recipient
-                msg.attach(MIMEText(text_content, "plain"))
-                msg.attach(MIMEText(html_content, "html"))
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=8) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_pass)
-                    server.sendmail(smtp_user, [effective_recipient], msg.as_string())
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _sync_send)
-            return True, f"Delivered via SMTP ({smtp_host}) to {effective_recipient}"
-        except Exception as e:
-            err_str = str(e)
-            if "Network is unreachable" in err_str or "101" in err_str:
-                return False, "Render Free Cloud blocks raw outbound Port 587. Please use a free Resend API Key (re_...) from resend.com for HTTPS Port 443 delivery."
-            return False, f"SMTP Error: {err_str}"
-    else:
-        # Check if settings exist in MongoDB Atlas as a fallback if container memory was cleared
-        if sentinel_db is not None and mongo_connected and not smtp_config.get("resend_key"):
-            try:
-                doc = await sentinel_db["settings"].find_one({"_id": "smtp_config"})
-                if doc and doc.get("smtp_config", {}).get("resend_key"):
-                    smtp_config.update(doc["smtp_config"])
-                    if smtp_config.get("resend_key"):
-                        return await send_secops_email(
-                            recipient=recipient,
-                            target_ip=target_ip,
-                            incident_id=incident_id,
-                            reason=reason,
-                            policy=policy,
-                            local_ip=local_ip,
-                            device_name=device_name,
-                            device_id=device_id,
-                            velocity_rps=velocity_rps,
-                            burst_count=burst_count
-                        )
-            except Exception:
-                pass
-        return False, "Render Cloud Free blocks Port 587. Resend Cloud API Key (starts with re_) required to deliver live emails to Outlook."
+    return await send_sre_email(subject, html_content, text_content, recipient=effective_recipient)
 
 def jail_ip_callback(ip_doc: dict):
     global jailed_ips, secops_recipient_email
@@ -843,6 +973,15 @@ async def run_real_deployment_pipeline(
             }
             create_incident_callback(incident_doc)
             await add_log("ANOMALY", f"Pre-flight Gate 3 failed on commit {commit_hash}: Syntax error detected.")
+            await send_pipeline_alert_to_outlook(
+                incident_id=incident_id,
+                commit_hash=commit_hash,
+                author=author,
+                repo_name=repo_name,
+                gate_name="Gate 3/5: Syntax Compilation Verification (node --check server.js)",
+                failure_reason="Syntax error detected in AST structure. Potential runtime crash prevented.",
+                remediation="Auto-rollback engaged. Release halted. Fix syntax locally and push again."
+            )
             await send_dispatch_alert("Pre-Flight Gate Blocked", f"🚨 Blocked push from {author} due to syntax failure.", color=15158332)
             return
 
@@ -877,6 +1016,15 @@ async def run_real_deployment_pipeline(
             }
             create_incident_callback(incident_doc)
             await add_log("CRITICAL", f"Gate 5 Violation: Exposed {name} detected in commit {commit_hash}!")
+            await send_pipeline_alert_to_outlook(
+                incident_id=incident_id,
+                commit_hash=commit_hash,
+                author=author,
+                repo_name=repo_name,
+                gate_name=f"Gate 5/5: Secret Shield Scan ({name})",
+                failure_reason=f"Exposed {name} detected in commit diffs! High-risk credential leak prevented.",
+                remediation="Pipeline hard-blocked. Revoke exposed secret immediately."
+            )
             await send_dispatch_alert("Security Gate Violation", f"🚨 Blocked push from {author} due to exposed {name}.", color=15158332)
             return
 
