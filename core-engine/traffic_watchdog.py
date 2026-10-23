@@ -163,13 +163,68 @@ class TrafficWatchdog:
             except Exception as e:
                 print(f"[WATCHDOG INCIDENT RESOLVE ERROR] {e}")
 
+    def record_threat_spike(
+        self, 
+        threat_rps: float, 
+        ip: str, 
+        local_ip: str = "", 
+        device_name: str = "", 
+        device_id: str = ""
+    ):
+        """Immediately updates history with an instant threat velocity spike, eliminating polling delay."""
+        current_time_str = get_ist_time_str()
+        self.defense_mode_active = True
+        self.current_attacker_ip = ip
+        if local_ip:
+            self.current_attacker_local_ip = local_ip
+        if device_name:
+            self.current_attacker_device_name = device_name
+        if device_id:
+            self.current_attacker_device_id = device_id
+
+        spike_val = max(float(threat_rps or 0.0), self.spike_threshold + 0.8)
+
+        # Update last point if it exists
+        if self.traffic_history:
+            self.traffic_history[-1]["threat_rps"] = round(spike_val, 2)
+            self.traffic_history[-1]["defense_active"] = True
+            self.traffic_history[-1]["attacker_ip"] = ip
+            self.traffic_history[-1]["attacker_local_ip"] = local_ip
+            self.traffic_history[-1]["attacker_device_name"] = device_name
+
+        # Also append fresh point so chart registers spike immediately
+        last_platform = self.traffic_history[-1]["platform_rps"] if self.traffic_history else 2.1
+        self.traffic_history.append({
+            "time": current_time_str,
+            "rps": last_platform,
+            "platform_rps": last_platform,
+            "threat_rps": round(spike_val, 2),
+            "attacker_ip": ip,
+            "attacker_local_ip": local_ip,
+            "attacker_device_name": device_name,
+            "latency": 45,
+            "defense_active": True,
+            "heap_used": 20.1,
+            "heap_total": 23.5,
+            "rss": 74.2,
+            "db_status": "CONNECTED",
+            "uptime": 120
+        })
+
     def trigger_surge(self, rps: float = 14.5, duration_ticks: int = 3, client_ip: Optional[str] = None):
         """Triggers a high-RPS surge for demonstration and evaluation testing."""
         self.simulated_spike_rps = rps
         self.manual_spike_remaining = duration_ticks
-        if client_ip:
-            self.current_attacker_ip = client_ip
-            self.pending_spike_ip = client_ip
+        target_ip = client_ip or "192.168.1.128"
+        self.current_attacker_ip = target_ip
+        self.pending_spike_ip = target_ip
+        self.record_threat_spike(
+            threat_rps=rps,
+            ip=target_ip,
+            local_ip="192.168.1.128",
+            device_name="Windows PC",
+            device_id="dev-surge"
+        )
 
     def get_current_metrics(self) -> List[Dict[str, Any]]:
         """Returns the list of traffic telemetry data points for WebSocket streaming."""

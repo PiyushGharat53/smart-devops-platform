@@ -153,6 +153,45 @@ cached_health = {
     "last_checked": 0
 }
 
+# Live WebSocket subscriber registry for instant zero-lag broadcast
+active_websockets: Set[Any] = set()
+
+async def broadcast_telemetry_now():
+    """Immediately broadcasts the latest telemetry snapshot to all active WebSockets with zero lag."""
+    if not active_websockets:
+        return
+    payload = {
+        "metrics": {
+            "cpu_usage": round(psutil.cpu_percent(interval=None) or random.uniform(32, 58), 1),
+            "memory_usage": round(psutil.virtual_memory().percent or random.uniform(50, 68), 1),
+            "disk_usage": round(psutil.disk_usage('/').percent or random.uniform(42, 54), 1),
+            "network_throughput": random.randint(35, 80)
+        },
+        "services": [
+            cached_health["gateway"],
+            cached_health["mongo"]
+        ],
+        "logs": live_logs,
+        "incidents": live_incidents,
+        "deployment": deployment_state,
+        "traffic_history": traffic_watchdog.get_current_metrics(),
+        "defense_mode_active": traffic_watchdog.defense_mode_active,
+        "jailed_ips": jailed_ips,
+        "mongo_status": {
+            "connected": mongo_connected,
+            "retention_policy": "30-Day TTL Auto-Purge"
+        }
+    }
+    encoded = json.dumps(payload, default=str)
+    dead_ws = set()
+    for ws in list(active_websockets):
+        try:
+            await ws.send_text(encoded)
+        except Exception:
+            dead_ws.add(ws)
+    for ws in dead_ws:
+        active_websockets.discard(ws)
+
 # ==========================================
 # Helper Utilities & Callbacks
 # ==========================================
@@ -851,6 +890,7 @@ async def simulate_surge(request: Request, payload: dict = None):
 
     traffic_watchdog.trigger_surge(rps=rps, duration_ticks=duration, client_ip=client_ip)
     await add_log("WARN", f"[SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s (Client: {client_ip}).")
+    await broadcast_telemetry_now()
     return {"message": f"Simulated traffic spike of {rps} req/s triggered.", "rps": rps, "client_ip": client_ip}
 
 @app.post("/api/traffic/real-burst")
@@ -1326,6 +1366,13 @@ async def report_threat(payload: dict):
     device_name = str((payload or {}).get("device_name", "")).strip()
     reason = str((payload or {}).get("reason", "Volumetric rate limit exceeded on FinSight Gateway")).strip()
     policy = str((payload or {}).get("policy", "AUTO_COOLDOWN")).strip()
+    velocity_rps = float((payload or {}).get("velocity_rps", 0.0) or 0.0)
+    burst_count = int((payload or {}).get("burst_count", 0) or 0)
+    if velocity_rps <= 0.0 and burst_count > 0:
+        velocity_rps = round(burst_count / 2.5, 2)
+    if velocity_rps <= 0.0:
+        velocity_rps = 2.8
+
     if not ip:
         return {"success": False, "error": "IP is required"}
     
@@ -1342,7 +1389,7 @@ async def report_threat(payload: dict):
         "jailed_at": get_ist_time_str(),
         "status": "QUARANTINED",
         "policy": policy,
-        "requests_blocked": 1,
+        "requests_blocked": burst_count or 1,
         "action_taken": "Direct HTTP 429 Security Challenge Dispatched",
         "auto_release_in": auto_release_str
     }
@@ -1365,6 +1412,16 @@ async def report_threat(payload: dict):
         traffic_watchdog.cooldown_counter = 0
         schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown", device_id)
 
+    # ZERO-LAG INSTANT GRAPH SPIKE & BROADCAST
+    traffic_watchdog.record_threat_spike(
+        threat_rps=velocity_rps,
+        ip=ip,
+        local_ip=local_ip,
+        device_name=device_name,
+        device_id=device_id
+    )
+    await broadcast_telemetry_now()
+
     return {"success": True, "ip": ip, "local_ip": local_ip, "device_id": device_id, "device_name": device_name, "incident_id": incident_id, "status": "QUARANTINED"}
 
 @app.get("/api/security/jailed-ips")
@@ -1379,42 +1436,86 @@ async def set_ip_policy(payload: dict):
     policy = str((payload or {}).get("policy", "release")).lower().strip()
     reason = str((payload or {}).get("reason", "Manual SRE Security Policy Enforcement")).strip()
     dev_id = str((payload or {}).get("device_id", "")).strip()
+    dev_name = str((payload or {}).get("device_name", "")).strip()
+    loc_ip = str((payload or {}).get("local_ip", "")).strip()
     inc_id_req = str((payload or {}).get("incident_id", "")).strip()
 
-    if not ip:
+    if not ip and not loc_ip:
         return {"success": False, "error": "IP address is required"}
 
     clean_ip = ip.replace("::ffff:", "").strip()
+    clean_local_ip = loc_ip.replace("::ffff:", "").strip() if loc_ip else (clean_ip if clean_ip.startswith("192.168.") or clean_ip.startswith("10.") else "")
+
     matched = None
-    for item in jailed_ips:
-        if inc_id_req and item.get("incident_id") == inc_id_req:
-            matched = item
-            break
-        item_ip = item.get("ip", "").replace("::ffff:", "").strip()
-        item_local_ip = item.get("local_ip", "").strip()
-        if item_ip == clean_ip or (item_local_ip and item_local_ip == clean_ip):
-            if dev_id and item.get("device_id") and dev_id != item.get("device_id"):
-                continue
-            matched = item
-            break
+    # 1. Match by exact incident_id
+    if inc_id_req:
+        for item in jailed_ips:
+            if item.get("incident_id") == inc_id_req:
+                matched = item
+                break
+
+    # 2. Match by exact local_ip if present
+    if not matched and clean_local_ip:
+        for item in jailed_ips:
+            item_local_ip = (item.get("local_ip") or "").strip()
+            if item_local_ip and item_local_ip == clean_local_ip:
+                matched = item
+                break
+
+    # 3. Match by device category (Mobile vs PC)
+    if not matched and dev_name:
+        is_target_mob = any(k in dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+        for item in jailed_ips:
+            item_dev = (item.get("device_name") or "").strip()
+            if item_dev:
+                is_item_mob = any(k in item_dev.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                if is_target_mob == is_item_mob:
+                    matched = item
+                    break
+
+    # 4. Fallback: match by IP, respecting device category isolation
+    if not matched:
+        for item in jailed_ips:
+            item_ip = item.get("ip", "").replace("::ffff:", "").strip()
+            item_local_ip = item.get("local_ip", "").strip()
+            if item_ip == clean_ip or (item_local_ip and item_local_ip == clean_ip):
+                if dev_name and item.get("device_name"):
+                    is_t_mob = any(k in dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                    is_i_mob = any(k in item.get("device_name").lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                    if is_t_mob != is_i_mob:
+                        continue  # DO NOT match Laptop when targeting Mobile!
+                matched = item
+                break
 
     if not matched:
         is_lan = clean_ip.startswith("192.168.") or clean_ip.startswith("10.") or clean_ip.startswith("172.")
         fallback_wan = getattr(traffic_watchdog, "current_attacker_ip", "") or "103.57.252.112"
-        target_dev_name = "Windows PC" if (is_lan and int(clean_ip.split(".")[-1]) < 135) else ("Android Mobile" if is_lan else "Manual Target")
+        
+        # Explicit target device naming:
+        if dev_name:
+            target_dev_name = dev_name
+        elif clean_local_ip.endswith(".167") or clean_ip.endswith(".167"):
+            target_dev_name = "Android Mobile"
+        elif clean_local_ip.endswith(".128") or clean_ip.endswith(".128"):
+            target_dev_name = "Windows PC"
+        else:
+            target_dev_name = "Android Mobile" if "mobile" in reason.lower() else "Windows PC"
+
+        actual_local_ip = clean_local_ip or (clean_ip if is_lan else ("192.168.1.167" if "mobile" in target_dev_name.lower() else "192.168.1.128"))
+
         matched = {
-            "ip": fallback_wan if is_lan else clean_ip,
-            "local_ip": clean_ip if is_lan else "",
-            "device_id": dev_id,
+            "ip": clean_ip if not is_lan else fallback_wan,
+            "local_ip": actual_local_ip,
+            "device_id": dev_id or ("dev-mobile" if "mobile" in target_dev_name.lower() else "dev-pc"),
             "device_name": target_dev_name,
             "threat_level": "CRITICAL" if policy in ("permanent", "ban") else "HIGH",
-            "incident_id": inc_id_req or f"INC-SRE-{random.randint(1000, 9999)}",
+            "incident_id": inc_id_req or f"INC-MANUAL-{random.randint(1000, 9999)}",
             "reason": reason,
             "jailed_at": get_ist_time_str(),
             "status": "QUARANTINED",
             "policy": "AUTO_COOLDOWN",
             "requests_blocked": 1,
-            "action_taken": "SRE Firewall Rule Enforced",
+            "action_taken": f"Manual SRE Quarantine [{target_dev_name}]",
             "auto_release_in": "Active"
         }
         jailed_ips.insert(0, matched)
@@ -1467,6 +1568,9 @@ async def set_ip_policy(payload: dict):
         matched["released_at"] = time.time()
         traffic_watchdog.defense_mode_active = False
         await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed Client {clean_ip} [{matched.get('device_name') or matched_dev_id}]. Allowlist restored.")
+
+    # Broadcast updated firewall rule to all active dashboards instantly
+    await broadcast_telemetry_now()
 
     return {"success": True, "ip": clean_ip, "entry": matched}
 
@@ -1879,6 +1983,7 @@ async def get_threat_matrix():
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket):
     await websocket.accept()
+    active_websockets.add(websocket)
     try:
         while True:
             payload = {
@@ -1906,11 +2011,13 @@ async def websocket_telemetry(websocket: WebSocket):
             # Bulletproof serialization with default=str prevents any unhandled type error
             encoded = json.dumps(payload, default=str)
             await websocket.send_text(encoded)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         pass
     except Exception as e:
         print(f"[WS CONNECTION ERROR] {e}")
+    finally:
+        active_websockets.discard(websocket)
 
 @app.post("/api/heal/{service_id}")
 async def execute_auto_heal(service_id: str):

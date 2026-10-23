@@ -311,9 +311,10 @@ export default function App() {
   const [policyUpdatingIps, setPolicyUpdatingIps] = useState({});
 
   // Manual IP block state
-  const [manualBlockIp, setManualBlockIp] = useState("");
+  const [manualBlockIp, setManualBlockIp] = useState("192.168.1.167");
+  const [manualBlockDevice, setManualBlockDevice] = useState("Android Mobile");
   const [manualBlockPolicy, setManualBlockPolicy] = useState("5m");
-  const [manualBlockReason, setManualBlockReason] = useState("Volumetric Surge Violation");
+  const [manualBlockReason, setManualBlockReason] = useState("Manual SRE Security Policy Enforcement");
   const [isEnforcingBlock, setIsEnforcingBlock] = useState(false);
   const [showManualBlockPanel, setShowManualBlockPanel] = useState(false);
 
@@ -573,8 +574,16 @@ export default function App() {
   };
 
   // ACTION: Technical Team Duration Policy Decision (5m, 1h, Permanent Ban, Release)
-  const handleSetIpPolicy = async (ip, policy, reason = "Manual SRE Security Policy Enforcement", deviceId = null, incidentId = null) => {
-    const updatingKey = incidentId || `${ip}_${deviceId || ""}`;
+  const handleSetIpPolicy = async (
+    ip, 
+    policy, 
+    reason = "Manual SRE Security Policy Enforcement", 
+    deviceId = null, 
+    incidentId = null,
+    deviceName = null,
+    localIp = null
+  ) => {
+    const updatingKey = incidentId || `${ip}_${deviceId || ""}_${deviceName || ""}`;
     setPolicyUpdatingIps((prev) => ({ ...prev, [updatingKey]: true, [ip]: true }));
     try {
       const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/set-ip-policy`, {
@@ -582,11 +591,19 @@ export default function App() {
         policy,
         reason,
         device_id: deviceId,
-        incident_id: incidentId
+        incident_id: incidentId,
+        device_name: deviceName,
+        local_ip: localIp
       });
       if (res.data?.entry) {
         setJailedIps((prev) => {
-          const matchIdx = prev.findIndex((j) => (incidentId ? j.incident_id === incidentId : j.ip === ip));
+          const matchIdx = prev.findIndex((j) => (
+            incidentId ? j.incident_id === incidentId : (
+              deviceName && j.device_name ? j.device_name === deviceName : (
+                localIp && j.local_ip ? j.local_ip === localIp : j.ip === ip
+              )
+            )
+          ));
           if (matchIdx !== -1) {
             const next = [...prev];
             next[matchIdx] = res.data.entry;
@@ -595,7 +612,7 @@ export default function App() {
           return [res.data.entry, ...prev];
         });
       }
-      setEmailSuccessMsg(`🛡️ Firewall rule updated for ${ip}: ${policy.toUpperCase()}`);
+      setEmailSuccessMsg(`🛡️ Firewall rule updated for ${deviceName || localIp || ip}: ${policy.toUpperCase()}`);
       setTimeout(() => setEmailSuccessMsg(""), 3500);
     } catch (err) {
       console.error("Failed to set IP policy", err);
@@ -604,14 +621,29 @@ export default function App() {
     }
   };
 
-  // ACTION: Manually Quarantine a specific IP
+  // ACTION: Manually Quarantine a specific IP / Device
   const handleManualBlockIp = async (e) => {
     if (e) e.preventDefault();
     const targetIp = manualBlockIp.trim();
     if (!targetIp) return;
     setIsEnforcingBlock(true);
     try {
-      await handleSetIpPolicy(targetIp, manualBlockPolicy, manualBlockReason);
+      const isMobile = manualBlockDevice.toLowerCase().includes("mobile") || targetIp.endsWith(".167");
+      const isLaptop = manualBlockDevice.toLowerCase().includes("pc") || manualBlockDevice.toLowerCase().includes("laptop") || targetIp.endsWith(".128");
+      const devName = isMobile ? "Android Mobile" : (isLaptop ? "Windows PC" : (manualBlockDevice || "Desktop"));
+      const locIp = (targetIp.startsWith("192.168.") || targetIp.startsWith("10.") || targetIp.startsWith("172.")) 
+        ? targetIp 
+        : (isMobile ? "192.168.1.167" : (isLaptop ? "192.168.1.128" : ""));
+
+      await handleSetIpPolicy(
+        targetIp, 
+        manualBlockPolicy, 
+        `Manual SRE Quarantine [${devName}]`, 
+        null, 
+        null, 
+        devName, 
+        locIp
+      );
       setManualBlockIp("");
       setShowManualBlockPanel(false);
     } finally {
@@ -1194,7 +1226,7 @@ export default function App() {
                 <Ban size={14} color="#ef4444" />
                 <input
                   type="text"
-                  placeholder="Target IP (e.g. 192.168.1.50)"
+                  placeholder="Target IP / LAN IP"
                   value={manualBlockIp}
                   onChange={(e) => setManualBlockIp(e.target.value)}
                   style={{
@@ -1202,44 +1234,68 @@ export default function App() {
                     borderRadius: 6, padding: "0.35rem 0.65rem", color: "#f8fafc", fontSize: 12, fontFamily: "monospace"
                   }}
                 />
+                <button
+                  type="button"
+                  onClick={() => { setManualBlockIp("192.168.1.167"); setManualBlockDevice("Android Mobile"); }}
+                  className="sso-btn"
+                  title="Target Android Mobile specifically (192.168.1.167) - Spares Laptop"
+                  style={{
+                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
+                    background: manualBlockDevice === "Android Mobile" ? "rgba(244,114,182,0.25)" : "rgba(244,114,182,0.12)",
+                    border: manualBlockDevice === "Android Mobile" ? "1px solid rgba(244,114,182,0.7)" : "1px solid rgba(244,114,182,0.3)",
+                    color: "#f472b6"
+                  }}
+                >
+                  📱 Mobile (192.168.1.167)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setManualBlockIp("192.168.1.128"); setManualBlockDevice("Windows PC"); }}
+                  className="sso-btn"
+                  title="Target Windows PC specifically (192.168.1.128) - Spares Mobile"
+                  style={{
+                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
+                    background: manualBlockDevice === "Windows PC" ? "rgba(167,139,250,0.25)" : "rgba(167,139,250,0.12)",
+                    border: manualBlockDevice === "Windows PC" ? "1px solid rgba(167,139,250,0.7)" : "1px solid rgba(167,139,250,0.3)",
+                    color: "#c4b5fd"
+                  }}
+                >
+                  💻 Windows PC (192.168.1.128)
+                </button>
                 {clientIp && (
                   <button
                     type="button"
-                    onClick={() => setManualBlockIp(clientIp)}
+                    onClick={() => { setManualBlockIp(clientIp); setManualBlockDevice("Router Gateway"); }}
                     className="sso-btn"
-                    title={`Fill with your computer's public WAN IP (${clientIp})`}
+                    title={`Fill with router WAN IP (${clientIp})`}
                     style={{
                       fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
                       background: "rgba(56,189,248,0.12)", border: "1px solid rgba(56,189,248,0.3)", color: "#7dd3fc"
                     }}
                   >
-                    📍 WAN IP ({clientIp})
+                    📍 WAN IP
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setManualBlockIp("192.168.1.128")}
-                  className="sso-btn"
-                  title="Target Windows PC on local LAN (192.168.1.128)"
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, color: "#94a3b8" }}>Device:</span>
+                <select
+                  value={manualBlockDevice}
+                  onChange={(e) => {
+                    setManualBlockDevice(e.target.value);
+                    if (e.target.value === "Android Mobile") setManualBlockIp("192.168.1.167");
+                    else if (e.target.value === "Windows PC") setManualBlockIp("192.168.1.128");
+                  }}
                   style={{
-                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
-                    background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)", color: "#c4b5fd"
+                    background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.15)",
+                    borderRadius: 6, padding: "0.35rem 0.65rem", color: "#f8fafc", fontSize: 12
                   }}
                 >
-                  💻 Windows PC (192.168.1.128)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setManualBlockIp("192.168.1.167")}
-                  className="sso-btn"
-                  title="Target Android Mobile on local LAN (192.168.1.167)"
-                  style={{
-                    fontSize: 11, padding: "0.35rem 0.6rem", borderRadius: 6,
-                    background: "rgba(244,114,182,0.12)", border: "1px solid rgba(244,114,182,0.3)", color: "#f472b6"
-                  }}
-                >
-                  📱 Mobile (192.168.1.167)
-                </button>
+                  <option value="Android Mobile">📱 Android Mobile</option>
+                  <option value="Windows PC">💻 Windows PC</option>
+                  <option value="Desktop">⚙️ Custom Terminal</option>
+                </select>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1352,7 +1408,7 @@ export default function App() {
                       {/* SRE Policy Control Buttons */}
                       {!isReleased && (
                         <button
-                          onClick={() => handleSetIpPolicy(entry.ip, "release", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
+                          onClick={() => handleSetIpPolicy(entry.local_ip || entry.ip, "release", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id, entry.device_name, entry.local_ip)}
                           disabled={isPolicyUpdating}
                           className="sso-btn"
                           title="Instantly unjail and allow traffic from this device"
@@ -1368,7 +1424,7 @@ export default function App() {
                       )}
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "5m", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
+                        onClick={() => handleSetIpPolicy(entry.local_ip || entry.ip, "5m", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id, entry.device_name, entry.local_ip)}
                         disabled={isPolicyUpdating || is5Min}
                         className="sso-btn"
                         title="Enforce 5-minute quarantine"
@@ -1384,7 +1440,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "1h", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
+                        onClick={() => handleSetIpPolicy(entry.local_ip || entry.ip, "1h", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id, entry.device_name, entry.local_ip)}
                         disabled={isPolicyUpdating || is1Hour}
                         className="sso-btn"
                         title="Enforce 1-hour quarantine"
@@ -1400,7 +1456,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "permanent", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
+                        onClick={() => handleSetIpPolicy(entry.local_ip || entry.ip, "permanent", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id, entry.device_name, entry.local_ip)}
                         disabled={isPolicyUpdating || isPermanent}
                         className="sso-btn"
                         title="Permanently ban this device"
