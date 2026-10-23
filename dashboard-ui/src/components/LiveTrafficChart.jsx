@@ -103,9 +103,10 @@ export default function LiveTrafficChart({
     const recentMaxThreat = trafficHistory.slice(-5).reduce((max, pt) => Math.max(max, pt.threat_rps || 0), 0);
     const isUnderAttack = defenseModeActive || currentThreatRps >= SPIKE_LIMIT || recentMaxThreat >= SPIKE_LIMIT;
 
-    // Detect attacker device details
-    const attackerIp = latestData.attacker_local_ip || (latestData.attacker_ip && latestData.attacker_ip !== 'None' ? latestData.attacker_ip : '');
-    const attackerDevice = latestData.attacker_device_name || '';
+    // Detect attacker device details (only present when there is active threat or defense mode)
+    const isThreatActive = currentThreatRps > 0.0 || defenseModeActive;
+    const attackerIp = isThreatActive ? (latestData.attacker_local_ip || (latestData.attacker_ip && latestData.attacker_ip !== 'None' ? latestData.attacker_ip : '')) : '';
+    const attackerDevice = isThreatActive ? (latestData.attacker_device_name || '') : '';
 
     return (
         <div style={{
@@ -295,11 +296,11 @@ export default function LiveTrafficChart({
                             fontWeight: 600,
                             padding: '2px 8px',
                             borderRadius: 6,
-                            background: isUnderAttack ? 'rgba(239, 68, 68, 0.18)' : 'rgba(34, 197, 94, 0.12)',
-                            color: isUnderAttack ? '#fca5a5' : '#86efac',
-                            border: isUnderAttack ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid rgba(34, 197, 94, 0.25)'
+                            background: isUnderAttack ? 'rgba(239, 68, 68, 0.18)' : (currentThreatRps > 0 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(34, 197, 94, 0.12)'),
+                            color: isUnderAttack ? '#fca5a5' : (currentThreatRps > 0 ? '#fde68a' : '#86efac'),
+                            border: isUnderAttack ? '1px solid rgba(239, 68, 68, 0.35)' : (currentThreatRps > 0 ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid rgba(34, 197, 94, 0.25)')
                         }}>
-                            {isUnderAttack ? '🚨 Rogue Surge' : '🟢 Flatline 0.0 RPS'}
+                            {isUnderAttack ? '🚨 Rogue Surge' : (currentThreatRps > 0 ? `🟡 ${Number(currentThreatRps).toFixed(1)} req/s` : '🟢 Flatline 0.0 RPS')}
                         </span>
                     </div>
 
@@ -387,31 +388,6 @@ export default function LiveTrafficChart({
                             </AreaChart>
                         </ResponsiveContainer>
                     </div>
-                </div>
-            </div>
-
-            {/* Architecture Explanatory Ribbon */}
-            <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: 10,
-                padding: '0.65rem 1rem',
-                borderRadius: '0.65rem',
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                fontSize: 11.5,
-                color: '#94a3b8'
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Shield size={14} color="#38bdf8" />
-                    <span>
-                        <strong style={{ color: '#e2e8f0' }}>Dual-Telemetry Architecture:</strong> 50+ legitimate visitors only affect Graph 1 (no alarms). Rogue spamming only triggers Graph 2, isolating and quarantining <span style={{ color: '#fca5a5', fontWeight: 600 }}>that exact rogue device only</span> when exceeding {SPIKE_LIMIT} req/s.
-                    </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#38bdf8' }}>
-                    <span>Active Defense IP Quarantine Jail &darr;</span>
                 </div>
             </div>
         </div>

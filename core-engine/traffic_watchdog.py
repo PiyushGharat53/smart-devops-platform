@@ -278,7 +278,21 @@ class TrafficWatchdog:
                 top_local_ip = data.get("active_top_local_ip") or ""
                 top_dev_id = data.get("active_top_device_id") or ""
                 top_dev_name = data.get("active_top_device_name") or ""
-                if top_ip and str(top_ip).strip() not in ("unknown", "127.0.0.1", "none", "", "::1"):
+                # 1. Calculate Real Production Site Traffic (Active Concurrent Visitors on Website)
+                api_active_users = int(data.get("active_users", 0) or 0)
+                direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
+                site_traffic = max(api_active_users, direct_active_visitors)
+                platform_rps = float(site_traffic)
+
+                # 2. Extract Individual Attacker Threat Velocity (From Top Client Tracker)
+                top_client_rps = float(data.get("top_client_rps", 0.0) or 0.0)
+                if top_client_rps >= 1.0:
+                    threat_rps = top_client_rps
+                else:
+                    threat_rps = 0.0  # FLATLINE strictly at 0.0 when normal or idle!
+
+                # Only assign attacker target if there is an active threat or defense mode
+                if (threat_rps > 0.0 or self.defense_mode_active) and top_ip and str(top_ip).strip() not in ("unknown", "127.0.0.1", "none", "", "::1"):
                     self.current_attacker_ip = str(top_ip).strip()
                     if top_local_ip:
                         self.current_attacker_local_ip = str(top_local_ip).strip()
@@ -286,6 +300,11 @@ class TrafficWatchdog:
                         self.current_attacker_device_id = str(top_dev_id).strip()
                     if top_dev_name:
                         self.current_attacker_device_name = str(top_dev_name).strip()
+                elif threat_rps == 0.0 and not self.defense_mode_active and self.manual_spike_remaining <= 0:
+                    self.current_attacker_ip = None
+                    self.current_attacker_local_ip = ""
+                    self.current_attacker_device_id = ""
+                    self.current_attacker_device_name = ""
 
                 # Check database status
                 if db_status == "DISCONNECTED" and not self.db_incident_active:
@@ -304,23 +323,14 @@ class TrafficWatchdog:
                         "✅ **MongoDB Connection Re-established!**\nDatabase status returned to CONNECTED.",
                         color=3066993
                     )
-
-                # 1. Calculate Real Production Site Traffic (Active Concurrent Visitors on Website)
-                api_active_users = int(data.get("active_users", 0) or 0)
-                direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
-                site_traffic = max(api_active_users, direct_active_visitors)
-                platform_rps = float(site_traffic)
-
-                # 2. Extract Individual Attacker Threat Velocity (From Top Client Tracker)
-                top_client_rps = float(data.get("top_client_rps", 0.0) or 0.0)
-                if top_client_rps >= 0.5:
-                    threat_rps = top_client_rps
-                else:
-                    threat_rps = 0.0  # FLATLINE at 0.0 when normal or idle!
             else:
                 direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
                 platform_rps = float(direct_active_visitors)
                 threat_rps = 0.0
+                if not self.defense_mode_active and self.manual_spike_remaining <= 0:
+                    self.current_attacker_ip = None
+                    self.current_attacker_local_ip = ""
+                    self.current_attacker_device_name = ""
 
         except Exception as e:
             # Resilient fallback: Endpoint spinning up or sleeping
@@ -453,6 +463,7 @@ class TrafficWatchdog:
                 await self.alert(alert_title, alert_body, color=15158332)
 
         # Append data point with decoupled site traffic and threat velocity
+        is_threat = (threat_rps >= 1.0) or self.defense_mode_active or (self.manual_spike_remaining > 0)
         data_point = {
             "time": current_time_str,
             "rps": round(platform_rps, 2),
@@ -460,9 +471,9 @@ class TrafficWatchdog:
             "site_traffic": int(platform_rps),
             "active_users": int(platform_rps),
             "threat_rps": round(threat_rps, 2),
-            "attacker_ip": self.current_attacker_ip or "None",
-            "attacker_local_ip": getattr(self, "current_attacker_local_ip", ""),
-            "attacker_device_name": getattr(self, "current_attacker_device_name", ""),
+            "attacker_ip": (self.current_attacker_ip or "None") if is_threat else "None",
+            "attacker_local_ip": getattr(self, "current_attacker_local_ip", "") if is_threat else "",
+            "attacker_device_name": getattr(self, "current_attacker_device_name", "") if is_threat else "",
             "latency": latency,
             "defense_active": self.defense_mode_active,
             "heap_used": round(heap_used, 1),

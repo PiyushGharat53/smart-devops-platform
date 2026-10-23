@@ -588,11 +588,21 @@ active_site_visitors: Dict[str, Dict[str, Any]] = {}
 
 def get_active_visitor_count() -> int:
     now = time.time()
-    # Heartbeats arrive every 2.5s from active clients. Purge after 7s of inactivity.
-    stale = [k for k, v in active_site_visitors.items() if now - v.get("last_seen", 0) > 7.0]
+    # Heartbeats arrive every 2.5s from active clients. Purge after 6.0s of inactivity.
+    stale = [k for k, v in active_site_visitors.items() if now - v.get("last_seen", 0) > 6.0]
     for k in stale:
         del active_site_visitors[k]
-    return len(active_site_visitors)
+        
+    unique_clients = set()
+    for k, v in active_site_visitors.items():
+        ip = v.get("ip", "")
+        loc = v.get("local_ip", "")
+        dname = (v.get("device_name") or "").lower()
+        dcat = "mobile" if any(x in dname for x in ("mobile", "phone", "android", "iphone", "ipad")) else "desktop"
+        unique_key = f"{ip}#{loc}" if loc else f"{ip}#{dcat}"
+        unique_clients.add(unique_key)
+        
+    return len(unique_clients)
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -1208,7 +1218,9 @@ async def check_client_status(
     
     if client_ip and client_ip not in ("127.0.0.1", "::1", "unknown"):
         # Register active site visitor
-        client_key = dev_id or (f"{loc_ip}#{dev_name}" if loc_ip else f"{client_ip}#{dev_name or 'client'}")
+        dname = (dev_name or "").lower()
+        dcat = "mobile" if any(x in dname for x in ("mobile", "phone", "android", "iphone", "ipad")) else "desktop"
+        client_key = f"{client_ip}#{loc_ip}" if loc_ip else f"{client_ip}#{dcat}"
         active_site_visitors[client_key] = {
             "ip": client_ip,
             "local_ip": loc_ip,
@@ -1216,13 +1228,6 @@ async def check_client_status(
             "device_id": dev_id,
             "last_seen": time.time()
         }
-        traffic_watchdog.current_attacker_ip = client_ip
-        if dev_id:
-            traffic_watchdog.current_attacker_device_id = dev_id
-        if dev_name:
-            traffic_watchdog.current_attacker_device_name = dev_name
-        if loc_ip:
-            traffic_watchdog.current_attacker_local_ip = loc_ip
     return await check_ip_status(client_ip, dev_id, dev_name, loc_ip)
 
 @app.get("/api/security/smtp-status")
