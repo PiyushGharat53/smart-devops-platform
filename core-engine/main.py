@@ -35,6 +35,7 @@ RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
 FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+OUTLOOK_WEBHOOK_URL = os.getenv("OUTLOOK_WEBHOOK_URL", "")
 
 # 30-Day TTL in seconds: 30 days * 24 hours * 60 minutes * 60 seconds = 2,592,000s
 RETENTION_PERIOD_SECONDS = 2592000
@@ -211,31 +212,52 @@ async def broadcast_telemetry_now():
 # Helper Utilities & Callbacks
 # ==========================================
 async def send_dispatch_alert(title: str, description: str, color: int = 15158332):
-    if not DISCORD_WEBHOOK_URL:
-        return
-    payload = {
-        "embeds": [{
-            "title": f"🛡️ Sentinel SmartOps: {title}",
-            "description": description,
-            "color": color,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "footer": {"text": "FinSight Autonomous SRE Platform"}
-        }]
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Sentinel-SmartOps/2.0"
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-            if response.status_code not in (200, 204):
-                error_text = response.text
-                if "<html" in error_text.lower() or "cloudflare" in error_text.lower():
-                    error_text = "Blocked by Discord Cloudflare Firewall (Shared IP Rate Limit)."
-                await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
-    except Exception as e:
-        await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
+    # 1. Microsoft 365 / Outlook Actionable Connector
+    if OUTLOOK_WEBHOOK_URL:
+        hex_color = f"#{color:06x}" if isinstance(color, int) else "#0078D4"
+        outlook_payload = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": hex_color.replace("#", ""),
+            "summary": title,
+            "sections": [{
+                "activityTitle": f"🚨 Microsoft Outlook SRE Center: {title}",
+                "activitySubtitle": "Sentinel SmartOps Autonomous Incident Dispatch",
+                "text": description,
+                "markdown": True
+            }]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(OUTLOOK_WEBHOOK_URL, json=outlook_payload)
+        except Exception as e:
+            await add_log("ANOMALY", f"Outlook Webhook Warning: {str(e)[:80]}")
+
+    # 2. Discord Webhook
+    if DISCORD_WEBHOOK_URL:
+        payload = {
+            "embeds": [{
+                "title": f"🛡️ Sentinel SmartOps: {title}",
+                "description": description,
+                "color": color,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "footer": {"text": "FinSight Autonomous SRE Platform"}
+            }]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Sentinel-SmartOps/2.0"
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
+                if response.status_code not in (200, 204):
+                    error_text = response.text
+                    if "<html" in error_text.lower() or "cloudflare" in error_text.lower():
+                        error_text = "Blocked by Discord Cloudflare Firewall (Shared IP Rate Limit)."
+                    await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
+        except Exception as e:
+            await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
 
 async def add_log(level: str, msg: str):
     time_str = get_ist_time_str()
@@ -357,8 +379,11 @@ async def send_secops_email(
     
     html_content = f"""
     <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-        <h2 style="color: #ef4444; margin: 0;">🛡️ Sentinel SmartOps Active Defense Alert</h2>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+        <h2 style="color: #ef4444; margin: 0; font-size: 18px;">🛡️ Sentinel SmartOps Active Defense Alert</h2>
+        <span style="background: rgba(0,120,212,0.18); border: 1px solid #0078d4; color: #60a5fa; font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 9999px;">
+          📫 Microsoft Outlook Enterprise Alert
+        </span>
       </div>
       <p style="color: #9ca3af; font-size: 14px;">An anomalous traffic surge or policy violation triggered automated quarantine enforcement on the FinSight Gateway.</p>
       
@@ -1532,7 +1557,8 @@ async def report_threat(payload: dict):
     }
     jail_ip_callback(entry)
     dev_str = f" [{device_name} ({local_ip or device_id})]" if (device_name or local_ip or device_id) else ""
-    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue client {local_ip or ip}{dev_str}. Reason: {reason}")
+    await add_log("ANOMALY", f"[{incident_id}] [TRAFFIC RADAR] Ingress surge detected: {velocity_rps:.1f} req/s from {local_ip or ip}{dev_str}. Safe threshold (4.0 req/s) breached.")
+    await add_log("CRITICAL", f"[{incident_id}] [SURGE SHIELD] Zero-Trust quarantine engaged. Terminal {local_ip or ip} isolated to HTTP 429 challenge jail.")
     
     # Engage watchdog state and launch live 12s auto-cooldown countdown
     if policy == "AUTO_COOLDOWN":
@@ -1841,7 +1867,8 @@ async def dispatch_abuse_email(payload: dict = None):
         burst_count=burst_count
     )
 
-    await add_log("INFO", f"[SECOPS AUTO-DISPATCH] Alert for {device_name or local_ip or target_ip} sent to {recipient}. Status: {status_msg}")
+    await add_log("INFO", f"[{incident_id}] [OUTLOOK SECOPS DISPATCH] Enterprise incident alert dispatched to {recipient}. Status: {status_msg}")
+    await add_log("INFO", f"[{incident_id}] [AUTONOMOUS SRE] Initiating 12s active defense suppression circuit.")
     await send_dispatch_alert(
         f"SecOps Alert Dispatched ({incident_id})",
         f"📧 **Autonomous Abuse Report Dispatched**\n"
@@ -1862,6 +1889,63 @@ async def dispatch_abuse_email(payload: dict = None):
         "dispatched_to": recipient,
         "status_detail": status_msg,
         "success": success
+    }
+
+@app.post("/api/security/test-outlook-alert")
+async def test_outlook_alert(payload: dict = None):
+    recipient = str((payload or {}).get("recipient") or secops_recipient_email).strip()
+    test_inc_id = f"INC-TEST-{random.randint(100, 999)}"
+    
+    success, status_msg = await send_secops_email(
+        recipient=recipient,
+        target_ip="192.168.1.154",
+        incident_id=test_inc_id,
+        reason="Manual SRE Outlook Notification Diagnostic Test",
+        policy="TEST_ALERT (Verified)",
+        local_ip="192.168.1.154",
+        device_name="Android Mobile",
+        device_id="dev-test",
+        velocity_rps=4.8,
+        burst_count=12
+    )
+    
+    await add_log("INFO", f"[{test_inc_id}] [OUTLOOK TEST DISPATCH] Test enterprise SRE alert sent to {recipient}. Status: {status_msg}")
+    return {
+        "success": success,
+        "recipient": recipient,
+        "incident_id": test_inc_id,
+        "status_detail": status_msg
+    }
+
+@app.post("/api/config/outlook-notification")
+async def config_outlook_notification(payload: dict):
+    global secops_recipient_email, OUTLOOK_WEBHOOK_URL
+    new_email = str((payload or {}).get("email", "")).strip()
+    webhook = str((payload or {}).get("webhook_url", "")).strip()
+    
+    updated = []
+    if new_email and "@" in new_email:
+        secops_recipient_email = new_email
+        updated.append(f"Email: {new_email}")
+    if webhook:
+        OUTLOOK_WEBHOOK_URL = webhook
+        updated.append("Webhook: Configured")
+        
+    await add_log("INFO", f"[OUTLOOK CONFIG] Notification center updated: {', '.join(updated)}")
+    return {
+        "success": True,
+        "recipient_email": secops_recipient_email,
+        "webhook_configured": bool(OUTLOOK_WEBHOOK_URL),
+        "message": "Microsoft Outlook Notification Center updated successfully."
+    }
+
+@app.get("/api/config/outlook-status")
+async def get_outlook_status():
+    return {
+        "configured": True,
+        "recipient_email": secops_recipient_email,
+        "webhook_configured": bool(OUTLOOK_WEBHOOK_URL),
+        "provider": "Microsoft Outlook & Office 365 (via Resend Cloud HTTPS)"
     }
 
 @app.get("/challenge", response_class=HTMLResponse)

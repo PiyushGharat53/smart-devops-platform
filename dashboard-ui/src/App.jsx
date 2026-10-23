@@ -349,10 +349,12 @@ export default function App() {
   const [copiedRca, setCopiedRca] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [sentinelConfigContent, setSentinelConfigContent] = useState("");
-  const [showDiscordModal, setShowDiscordModal] = useState(false);
-  const [discordWebhookInput, setDiscordWebhookInput] = useState("");
-  const [discordConfigured, setDiscordConfigured] = useState(false);
-  const [discordStatusMsg, setDiscordStatusMsg] = useState("");
+  const [showOutlookModal, setShowOutlookModal] = useState(false);
+  const [outlookEmailInput, setOutlookEmailInput] = useState("gharatpiyush63@gmail.com");
+  const [outlookWebhookInput, setOutlookWebhookInput] = useState("");
+  const [outlookStatusMsg, setOutlookStatusMsg] = useState("");
+  const [savingOutlook, setSavingOutlook] = useState(false);
+  const [testingOutlook, setTestingOutlook] = useState(false);
 
   const terminalRef = useRef(null);
   const wsRef = useRef(null);
@@ -799,23 +801,47 @@ Status: ${inc.status || "Mitigated"}`;
     }
   };
 
-  // ACTION: Save Discord Webhook
-  const handleSaveDiscordWebhook = async () => {
-    if (!discordWebhookInput.trim()) return;
-    setDiscordStatusMsg("Connecting & sending verification embed...");
+  // ACTION: Save Microsoft Outlook Notification Center Settings
+  const handleSaveOutlookSettings = async () => {
+    if (!outlookEmailInput.trim() && !outlookWebhookInput.trim()) return;
+    setSavingOutlook(true);
+    setOutlookStatusMsg("Saving Microsoft Outlook configuration...");
     try {
-      const res = await axios.post(`${BACKEND_HTTP_URL}/api/config/discord-webhook`, {
-        webhook_url: discordWebhookInput.trim()
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/config/outlook-notification`, {
+        email: outlookEmailInput.trim(),
+        webhook_url: outlookWebhookInput.trim()
       });
       if (res.data?.success) {
-        setDiscordConfigured(true);
-        setDiscordStatusMsg("✅ Webhook connected! Check your Discord channel for verification alert.");
-        setTimeout(() => setShowDiscordModal(false), 2500);
+        setRecipientEmail(res.data.recipient_email || outlookEmailInput.trim());
+        setOutlookStatusMsg("✅ Microsoft Outlook Notification Center synchronized!");
+        setTimeout(() => setOutlookStatusMsg(""), 3500);
       } else {
-        setDiscordStatusMsg(`❌ Failed: ${res.data?.message}`);
+        setOutlookStatusMsg(`❌ Failed: ${res.data?.message || 'Error'}`);
       }
     } catch (err) {
-      setDiscordStatusMsg(`❌ Error: ${err.message}`);
+      setOutlookStatusMsg(`❌ Error: ${err.message}`);
+    } finally {
+      setSavingOutlook(false);
+    }
+  };
+
+  // ACTION: Send Real Test Alert to Microsoft Outlook
+  const handleTestOutlookAlert = async () => {
+    setTestingOutlook(true);
+    setOutlookStatusMsg("Dispatching live enterprise SRE test alert to Microsoft Outlook...");
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/test-outlook-alert`, {
+        recipient: outlookEmailInput.trim() || recipientEmail
+      });
+      if (res.data?.success) {
+        setOutlookStatusMsg(`✅ Delivered to Microsoft Outlook (${res.data.recipient})! [${res.data.incident_id}] Check your inbox.`);
+      } else {
+        setOutlookStatusMsg(`⚠️ Dispatched: ${res.data?.status_detail || "Logged to audit trail"}`);
+      }
+    } catch (err) {
+      setOutlookStatusMsg(`❌ Test dispatch error: ${err.message}`);
+    } finally {
+      setTestingOutlook(false);
     }
   };
 
@@ -1501,6 +1527,22 @@ Status: ${inc.status || "Mitigated"}`;
               </div>
               <span style={{ fontSize: 11, color: "#64748b" }}>Live Polling: 2.0s</span>
 
+              {/* Microsoft Outlook Enterprise SRE Center Button */}
+              <button
+                onClick={() => { setShowOutlookModal(true); setOutlookEmailInput(recipientEmail); }}
+                className="sso-btn"
+                title="Configure Microsoft Outlook / Office 365 Enterprise Notification Center"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, fontSize: 11,
+                  color: "#93c5fd", background: "rgba(0,120,212,0.15)",
+                  border: "1px solid rgba(0,120,212,0.45)",
+                  padding: "3px 10px", borderRadius: 9999, fontWeight: 600
+                }}
+              >
+                <Mail size={12} color="#60a5fa" />
+                <span>📫 Outlook Live</span>
+              </button>
+
               {/* Clear AIOps Logs Button */}
               <button
                 onClick={handleClearLogs}
@@ -1770,59 +1812,123 @@ Status: ${inc.status || "Mitigated"}`;
         )}
       </AnimatePresence>
 
-      {/* 4. DISCORD WEBHOOK MODAL */}
+      {/* 4. MICROSOFT OUTLOOK ENTERPRISE NOTIFICATION CENTER MODAL */}
       <AnimatePresence>
-        {showDiscordModal && (
-          <motion.div style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDiscordModal(false)}>
-            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }} />
-            <motion.div initial={{ opacity: 0, scale: 0.94, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 8 }} onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: "100%", maxWidth: 540, borderRadius: 16, border: "1px solid rgba(99,102,241,0.35)", padding: 24, display: "flex", flexDirection: "column", gap: 18, background: "linear-gradient(160deg, #14113a, #0c0a1f)", boxShadow: "0 20px 50px rgba(0,0,0,0.6)" }}>
+        {showOutlookModal && (
+          <motion.div style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowOutlookModal(false)}>
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.78)", backdropFilter: "blur(8px)" }} />
+            <motion.div initial={{ opacity: 0, scale: 0.94, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 8 }} onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: "100%", maxWidth: 560, borderRadius: 16, border: "1px solid rgba(0,120,212,0.45)", padding: 24, display: "flex", flexDirection: "column", gap: 16, background: "linear-gradient(160deg, #0d172e, #090e1f)", boxShadow: "0 25px 60px rgba(0,0,0,0.7), 0 0 35px rgba(0,120,212,0.18)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <h3 style={{ fontSize: 17, fontWeight: 600, color: "#ffffff", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                  <BellRing size={18} color="#a5b4fc" /> Discord Operations Webhook Integration
-                </h3>
-                <button onClick={() => setShowDiscordModal(false)} className="sso-btn" style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", color: "#94a3b8", display: "flex" }}><X size={18} /></button>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 8, background: "#0078d4", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,120,212,0.4)" }}>
+                    <Mail size={19} color="#ffffff" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: 17, fontWeight: 700, color: "#ffffff", margin: 0 }}>
+                      Microsoft Outlook Notification Center
+                    </h3>
+                    <p style={{ fontSize: 11, color: "#93c5fd", margin: "1px 0 0 0" }}>Enterprise Office 365 &amp; Outlook SRE Incident Dispatcher</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowOutlookModal(false)} className="sso-btn" style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", color: "#94a3b8", display: "flex" }}><X size={18} /></button>
               </div>
-              <p style={{ fontSize: 13, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>
-                When a traffic surge or health anomaly occurs, Sentinel formats rich embedded alerts with incident ID, RPS, and operational status, and POSTs directly to your Discord channel.
+
+              <p style={{ fontSize: 12.5, color: "#cbd5e1", margin: 0, lineHeight: 1.55 }}>
+                Industry-standard DevOps escalation: When volumetric bursts, rate violations, or service failures occur, Sentinel transmits high-priority, formatted SRE Incident Cards directly to your <strong>Microsoft Outlook</strong> inbox or Office 365 Connector.
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <label style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 500 }}>Discord Webhook URL</label>
+
+              {/* Status Badge Strip */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(0,120,212,0.08)", border: "1px solid rgba(0,120,212,0.25)" }}>
+                  <p style={{ fontSize: 10, color: "#93c5fd", margin: "0 0 3px 0", textTransform: "uppercase", fontWeight: 600 }}>Delivery Protocol</p>
+                  <p style={{ fontSize: 12.5, fontWeight: 600, color: "#f8fafc", margin: 0 }}>Cloud HTTPS Port 443 + TLS</p>
+                </div>
+                <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)" }}>
+                  <p style={{ fontSize: 10, color: "#86efac", margin: "0 0 3px 0", textTransform: "uppercase", fontWeight: 600 }}>Target Destination</p>
+                  <p style={{ fontSize: 12.5, fontWeight: 600, color: "#86efac", margin: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>{recipientEmail || "Outlook Recipient"}</p>
+                </div>
+              </div>
+
+              {/* Email Input */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <label style={{ fontSize: 11.5, color: "#cbd5e1", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span>Outlook / Office 365 Incident Email</span>
+                  <span style={{ fontSize: 10.5, color: "#93c5fd", fontWeight: 400 }}>(e.g. user@outlook.com or corporate Office 365)</span>
+                </label>
                 <input
-                  type="text"
-                  placeholder="https://discord.com/api/webhooks/..."
-                  value={discordWebhookInput}
-                  onChange={(e) => setDiscordWebhookInput(e.target.value)}
+                  type="email"
+                  placeholder="your-name@outlook.com"
+                  value={outlookEmailInput}
+                  onChange={(e) => setOutlookEmailInput(e.target.value)}
                   style={{
-                    padding: "0.65rem 0.9rem",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(0,0,0,0.4)",
+                    padding: "0.6rem 0.85rem",
+                    borderRadius: 9,
+                    border: "1px solid rgba(0,120,212,0.4)",
+                    background: "rgba(0,0,0,0.45)",
                     color: "#f8fafc",
-                    fontSize: 13,
+                    fontSize: 12.5,
                     fontFamily: "monospace",
                     outline: "none"
                   }}
                 />
               </div>
-              {discordStatusMsg && (
-                <p style={{ fontSize: 12.5, color: discordStatusMsg.startsWith("✅") ? "#86efac" : "#fbbf24", margin: 0 }}>
-                  {discordStatusMsg}
+
+              {/* Webhook Input */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <label style={{ fontSize: 11.5, color: "#cbd5e1", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span>Office 365 / Teams Incoming Webhook Connector</span>
+                  <span style={{ fontSize: 10.5, color: "#64748b", fontWeight: 400 }}>(Optional)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="https://outlook.office.com/webhook/..."
+                  value={outlookWebhookInput}
+                  onChange={(e) => setOutlookWebhookInput(e.target.value)}
+                  style={{
+                    padding: "0.6rem 0.85rem",
+                    borderRadius: 9,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(0,0,0,0.45)",
+                    color: "#f8fafc",
+                    fontSize: 12.5,
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              {outlookStatusMsg && (
+                <p style={{ fontSize: 12, color: outlookStatusMsg.startsWith("✅") ? "#86efac" : (outlookStatusMsg.startsWith("⚠️") ? "#fde047" : "#93c5fd"), margin: 0, padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                  {outlookStatusMsg}
                 </p>
               )}
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+
+              {/* Action Buttons */}
+              <div style={{ display: "flex", gap: 9, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 4 }}>
                 <button
-                  onClick={() => setShowDiscordModal(false)}
+                  onClick={() => setShowOutlookModal(false)}
                   className="sso-btn"
-                  style={{ padding: "0.55rem 1rem", borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", fontSize: 13 }}
+                  style={{ padding: "0.55rem 0.95rem", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", fontSize: 12.5 }}
                 >
-                  Cancel
+                  Close
                 </button>
                 <button
-                  onClick={handleSaveDiscordWebhook}
+                  onClick={handleTestOutlookAlert}
+                  disabled={testingOutlook}
                   className="sso-btn"
-                  style={{ padding: "0.55rem 1.2rem", borderRadius: 10, border: "1px solid rgba(99,102,241,0.5)", background: "rgba(99,102,241,0.25)", color: "#e0e7ff", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                  style={{ padding: "0.55rem 1.05rem", borderRadius: 9, border: "1px solid rgba(234,179,8,0.5)", background: "rgba(234,179,8,0.18)", color: "#fef08a", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
                 >
-                  <Send size={13} /> Save &amp; Test Webhook
+                  {testingOutlook ? <Loader2 size={13} className="sso-spin" /> : <Send size={13} />}
+                  ⚡ Send Test Alert to Outlook
+                </button>
+                <button
+                  onClick={handleSaveOutlookSettings}
+                  disabled={savingOutlook}
+                  className="sso-btn"
+                  style={{ padding: "0.55rem 1.15rem", borderRadius: 9, border: "1px solid #0078d4", background: "rgba(0,120,212,0.35)", color: "#ffffff", fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  {savingOutlook ? <Loader2 size={13} className="sso-spin" /> : <Check size={13} />}
+                  Save Outlook Settings
                 </button>
               </div>
             </motion.div>

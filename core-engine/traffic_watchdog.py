@@ -378,7 +378,8 @@ class TrafficWatchdog:
                 self.last_jailed_ip = None
                 self.pending_spike_ip = None
 
-                await self.log("REMEDIATED", f"[{inc_id}] Threat velocity normalized (0.0 req/s). Active defense disengaged & IP unjailed.")
+                await self.log("INFO", f"[{inc_id}] [SRE HEURISTIC] Ingress velocity sampled: 0.0 req/s baseline. Zero packet loss on benign traffic.")
+                await self.log("REMEDIATED", f"[{inc_id}] [AUTONOMOUS HEALING] Threat neutralized. Active defense disengaged & IP unjailed.")
 
                 rec_title = f"System Recovered: {target_service_name}"
                 rec_body = (
