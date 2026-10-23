@@ -593,16 +593,26 @@ def get_active_visitor_count() -> int:
     for k in stale:
         del active_site_visitors[k]
         
-    unique_clients = set()
+    groups = {}  # group_key: (ip, dcat) -> set of (loc or dev_id or 'primary')
     for k, v in active_site_visitors.items():
         ip = v.get("ip", "")
         loc = v.get("local_ip", "")
+        dev_id = v.get("device_id", "")
         dname = (v.get("device_name") or "").lower()
         dcat = "mobile" if any(x in dname for x in ("mobile", "phone", "android", "iphone", "ipad")) else "desktop"
-        unique_key = f"{ip}#{loc}" if loc else f"{ip}#{dcat}"
-        unique_clients.add(unique_key)
+        group_key = f"{ip}#{dcat}"
+        if group_key not in groups:
+            groups[group_key] = set()
+        sub_id = loc or dev_id or "primary"
+        groups[group_key].add(sub_id)
         
-    return len(unique_clients)
+    total_count = 0
+    for group_key, sub_set in groups.items():
+        if len(sub_set) > 1 and "primary" in sub_set:
+            sub_set.remove("primary")
+        total_count += len(sub_set)
+        
+    return total_count
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -1220,7 +1230,9 @@ async def check_client_status(
         # Register active site visitor
         dname = (dev_name or "").lower()
         dcat = "mobile" if any(x in dname for x in ("mobile", "phone", "android", "iphone", "ipad")) else "desktop"
-        client_key = f"{client_ip}#{loc_ip}" if loc_ip else f"{client_ip}#{dcat}"
+        client_key = f"{client_ip}#{loc_ip}" if loc_ip else (f"{client_ip}#{dev_id}" if dev_id else f"{client_ip}#{dcat}")
+        if loc_ip or dev_id:
+            active_site_visitors.pop(f"{client_ip}#{dcat}", None)
         active_site_visitors[client_key] = {
             "ip": client_ip,
             "local_ip": loc_ip,
