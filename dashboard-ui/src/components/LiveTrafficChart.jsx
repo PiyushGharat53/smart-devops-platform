@@ -49,7 +49,7 @@ function ThreatTooltip({ active, payload, label }) {
     if (active && payload && payload.length) {
         const data = payload[0].payload;
         const val = data.threat_rps !== undefined ? data.threat_rps : 0;
-        const isSpike = val >= 4.0;
+        const isSpike = val >= 2.0;
         const targetIp = data.attacker_local_ip || (data.attacker_ip && data.attacker_ip !== 'None' ? data.attacker_ip : '');
         const devName = data.attacker_device_name || '';
 
@@ -73,7 +73,7 @@ function ThreatTooltip({ active, payload, label }) {
                     </div>
                 )}
                 <div style={{ color: isSpike ? '#fca5a5' : '#86efac', fontSize: 11, marginTop: 4 }}>
-                    Status: {isSpike ? '🚨 Spiking Over 4.0 req/s Limit (Quarantining)' : '🟢 Flatline 0.0 req/s (Peaceful)'}
+                    Status: {isSpike ? '🚨 Spiking Over 2.0 req/s Limit (Quarantining)' : '🟢 Flatline 0.0 req/s (Peaceful)'}
                 </div>
             </div>
         );
@@ -88,7 +88,7 @@ export default function LiveTrafficChart({
     onRealBurst = null,
     isSimulating = false
 }) {
-    const SPIKE_LIMIT = 4.0;
+    const SPIKE_LIMIT = 2.0;
     const latestData = trafficHistory.length > 0 ? trafficHistory[trafficHistory.length - 1] : {};
 
     const currentPlatformRps = latestData.platform_rps !== undefined ? latestData.platform_rps : (latestData.rps || 0);
@@ -455,7 +455,7 @@ export default function LiveTrafficChart({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Shield size={14} color="#38bdf8" />
                     <span>
-                        <strong style={{ color: '#e2e8f0' }}>Dual-Telemetry Architecture:</strong> 50+ legitimate visitors only affect Graph 1 (no alarms). Rogue spamming only triggers Graph 2, isolating and quarantining <span style={{ color: '#fca5a5', fontWeight: 600 }}>that exact rogue device only</span>.
+                        <strong style={{ color: '#e2e8f0' }}>Dual-Telemetry Architecture:</strong> 50+ legitimate visitors only affect Graph 1 (no alarms). Rogue spamming only triggers Graph 2, isolating and quarantining <span style={{ color: '#fca5a5', fontWeight: 600 }}>that exact rogue device only</span> when exceeding {SPIKE_LIMIT} req/s.
                     </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#38bdf8' }}>

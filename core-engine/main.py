@@ -495,7 +495,7 @@ traffic_watchdog = TrafficWatchdog(
     jail_ip_cb=jail_ip_callback,
     release_ip_cb=release_ip_callback,
     target_url=FINSIGHT_API_URL,
-    spike_threshold=4.0
+    spike_threshold=2.0
 )
 
 # Background Health Checker
