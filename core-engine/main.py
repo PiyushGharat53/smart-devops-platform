@@ -125,6 +125,9 @@ async def init_mongodb_ttl():
                 if saved_recip and "@" in saved_recip:
                     secops_recipient_email = saved_recip
                     print(f"[MONGO ATLAS SETTINGS] Loaded SecOps recipient email: {secops_recipient_email}")
+                saved_webhook = settings_doc.get("outlook_webhook_url")
+                if saved_webhook:
+                    OUTLOOK_WEBHOOK_URL = saved_webhook
         except Exception as ex:
             print(f"[MONGO ATLAS SETTINGS WARN] {ex}")
 
@@ -524,7 +527,28 @@ async def send_secops_email(
                 return False, "Render Free Cloud blocks raw outbound Port 587. Please use a free Resend API Key (re_...) from resend.com for HTTPS Port 443 delivery."
             return False, f"SMTP Error: {err_str}"
     else:
-        return True, f"Alert recorded & queued for {effective_recipient} (Logged to Atlas Security Audit Trail)"
+        # Check if settings exist in MongoDB Atlas as a fallback if container memory was cleared
+        if sentinel_db is not None and mongo_connected and not smtp_config.get("resend_key"):
+            try:
+                doc = await sentinel_db["settings"].find_one({"_id": "smtp_config"})
+                if doc and doc.get("smtp_config", {}).get("resend_key"):
+                    smtp_config.update(doc["smtp_config"])
+                    if smtp_config.get("resend_key"):
+                        return await send_secops_email(
+                            recipient=recipient,
+                            target_ip=target_ip,
+                            incident_id=incident_id,
+                            reason=reason,
+                            policy=policy,
+                            local_ip=local_ip,
+                            device_name=device_name,
+                            device_id=device_id,
+                            velocity_rps=velocity_rps,
+                            burst_count=burst_count
+                        )
+            except Exception:
+                pass
+        return False, "Render Cloud Free blocks Port 587. Resend Cloud API Key (starts with re_) required to deliver live emails to Outlook."
 
 def jail_ip_callback(ip_doc: dict):
     global jailed_ips, secops_recipient_email
@@ -1335,6 +1359,24 @@ async def configure_smtp(payload: dict):
             res = await loop.run_in_executor(None, _test_resend)
             smtp_config["resend_key"] = api_key
             smtp_config["provider"] = "resend"
+            if "@" in user:
+                secops_recipient_email = user
+
+            # Persist to MongoDB Atlas
+            if sentinel_db is not None and mongo_connected:
+                try:
+                    await sentinel_db["settings"].update_one(
+                        {"_id": "smtp_config"},
+                        {"$set": {
+                            "smtp_config": smtp_config,
+                            "secops_recipient_email": secops_recipient_email,
+                            "updatedAt": datetime.now(timezone.utc)
+                        }},
+                        upsert=True
+                    )
+                except Exception as ex:
+                    print(f"[MONGO SAVE SETTINGS WARN] {ex}")
+
             await add_log("INFO", f"[EMAIL CONFIG] Resend API Key verified! Live verification email sent to {target_email}.")
             return {"success": True, "message": f"Resend API verified! Live test email sent to {target_email}."}
         except Exception as e:
@@ -1362,6 +1404,24 @@ async def configure_smtp(payload: dict):
             await loop.run_in_executor(None, _test_brevo)
             smtp_config["brevo_key"] = api_key
             smtp_config["provider"] = "brevo"
+            if "@" in user:
+                secops_recipient_email = user
+
+            # Persist to MongoDB Atlas
+            if sentinel_db is not None and mongo_connected:
+                try:
+                    await sentinel_db["settings"].update_one(
+                        {"_id": "smtp_config"},
+                        {"$set": {
+                            "smtp_config": smtp_config,
+                            "secops_recipient_email": secops_recipient_email,
+                            "updatedAt": datetime.now(timezone.utc)
+                        }},
+                        upsert=True
+                    )
+                except Exception as ex:
+                    print(f"[MONGO SAVE SETTINGS WARN] {ex}")
+
             await add_log("INFO", f"[EMAIL CONFIG] Brevo API Key verified! Live test email sent to {target_email}.")
             return {"success": True, "message": f"Brevo API verified! Live test email sent to {target_email}."}
         except Exception as e:
@@ -1894,6 +1954,24 @@ async def dispatch_abuse_email(payload: dict = None):
 @app.post("/api/security/test-outlook-alert")
 async def test_outlook_alert(payload: dict = None):
     recipient = str((payload or {}).get("recipient") or secops_recipient_email).strip()
+    api_key = str((payload or {}).get("api_key", "")).strip()
+
+    if api_key and api_key.startswith("re_"):
+        smtp_config["resend_key"] = api_key
+        smtp_config["provider"] = "resend"
+        if sentinel_db is not None and mongo_connected:
+            try:
+                await sentinel_db["settings"].update_one(
+                    {"_id": "smtp_config"},
+                    {"$set": {
+                        "smtp_config": smtp_config,
+                        "updatedAt": datetime.now(timezone.utc)
+                    }},
+                    upsert=True
+                )
+            except Exception:
+                pass
+
     test_inc_id = f"INC-TEST-{random.randint(100, 999)}"
     
     success, status_msg = await send_secops_email(
@@ -1909,7 +1987,7 @@ async def test_outlook_alert(payload: dict = None):
         burst_count=12
     )
     
-    await add_log("INFO", f"[{test_inc_id}] [OUTLOOK TEST DISPATCH] Test enterprise SRE alert sent to {recipient}. Status: {status_msg}")
+    await add_log("INFO" if success else "WARNING", f"[{test_inc_id}] [OUTLOOK TEST DISPATCH] Test enterprise SRE alert to {recipient}. Status: {status_msg}")
     return {
         "success": success,
         "recipient": recipient,
@@ -1918,10 +1996,11 @@ async def test_outlook_alert(payload: dict = None):
     }
 
 @app.post("/api/config/outlook-notification")
-async def config_outlook_notification(payload: dict):
-    global secops_recipient_email, OUTLOOK_WEBHOOK_URL
+async def config_outlook_notification(payload: dict = None):
+    global secops_recipient_email, OUTLOOK_WEBHOOK_URL, smtp_config
     new_email = str((payload or {}).get("email", "")).strip()
     webhook = str((payload or {}).get("webhook_url", "")).strip()
+    api_key = str((payload or {}).get("api_key", "")).strip()
     
     updated = []
     if new_email and "@" in new_email:
@@ -1930,22 +2009,53 @@ async def config_outlook_notification(payload: dict):
     if webhook:
         OUTLOOK_WEBHOOK_URL = webhook
         updated.append("Webhook: Configured")
+    if api_key:
+        if api_key.startswith("re_"):
+            smtp_config["resend_key"] = api_key
+            smtp_config["provider"] = "resend"
+            updated.append("Resend HTTPS Key: Active")
+        elif api_key.startswith("xkeysib-"):
+            smtp_config["brevo_key"] = api_key
+            smtp_config["provider"] = "brevo"
+            updated.append("Brevo HTTPS Key: Active")
+
+    # Persist all settings to MongoDB Atlas
+    if sentinel_db is not None and mongo_connected:
+        try:
+            await sentinel_db["settings"].update_one(
+                {"_id": "smtp_config"},
+                {"$set": {
+                    "smtp_config": smtp_config,
+                    "secops_recipient_email": secops_recipient_email,
+                    "outlook_webhook_url": OUTLOOK_WEBHOOK_URL,
+                    "updatedAt": datetime.now(timezone.utc)
+                }},
+                upsert=True
+            )
+        except Exception as ex:
+            print(f"[MONGO SAVE SETTINGS WARN] {ex}")
         
-    await add_log("INFO", f"[OUTLOOK CONFIG] Notification center updated: {', '.join(updated)}")
+    await add_log("INFO", f"[OUTLOOK CONFIG] Notification center updated: {', '.join(updated) if updated else 'Saved'}")
     return {
         "success": True,
         "recipient_email": secops_recipient_email,
         "webhook_configured": bool(OUTLOOK_WEBHOOK_URL),
-        "message": "Microsoft Outlook Notification Center updated successfully."
+        "resend_active": bool(smtp_config.get("resend_key")),
+        "message": "Microsoft Outlook Notification Center updated and saved to MongoDB Atlas."
     }
 
 @app.get("/api/config/outlook-status")
 async def get_outlook_status():
+    has_resend = bool(smtp_config.get("resend_key"))
+    has_brevo = bool(smtp_config.get("brevo_key"))
+    has_smtp = bool(smtp_config.get("user") and smtp_config.get("pass"))
     return {
         "configured": True,
         "recipient_email": secops_recipient_email,
         "webhook_configured": bool(OUTLOOK_WEBHOOK_URL),
-        "provider": "Microsoft Outlook & Office 365 (via Resend Cloud HTTPS)"
+        "resend_active": has_resend,
+        "delivery_ready": has_resend or has_brevo or has_smtp,
+        "provider": "Microsoft Outlook & Office 365 (via Resend Cloud HTTPS)" if has_resend else "Microsoft Outlook & Office 365"
     }
 
 @app.get("/challenge", response_class=HTMLResponse)

@@ -352,6 +352,8 @@ export default function App() {
   const [showOutlookModal, setShowOutlookModal] = useState(false);
   const [outlookEmailInput, setOutlookEmailInput] = useState("gharatpiyush63@gmail.com");
   const [outlookWebhookInput, setOutlookWebhookInput] = useState("");
+  const [outlookApiKeyInput, setOutlookApiKeyInput] = useState("");
+  const [outlookDeliveryActive, setOutlookDeliveryActive] = useState(false);
   const [outlookStatusMsg, setOutlookStatusMsg] = useState("");
   const [savingOutlook, setSavingOutlook] = useState(false);
   const [testingOutlook, setTestingOutlook] = useState(false);
@@ -488,7 +490,20 @@ export default function App() {
       .then((res) => {
         if (res.data?.configured) {
           setSmtpConnected(true);
+          setOutlookDeliveryActive(true);
           if (res.data?.user) setSmtpUserInput(res.data.user);
+        }
+      })
+      .catch(() => {});
+
+    axios.get(`${BACKEND_HTTP_URL}/api/config/outlook-status`)
+      .then((res) => {
+        if (res.data?.recipient_email) {
+          setRecipientEmail(res.data.recipient_email);
+          setOutlookEmailInput(res.data.recipient_email);
+        }
+        if (res.data?.delivery_ready || res.data?.resend_active) {
+          setOutlookDeliveryActive(true);
         }
       })
       .catch(() => {});
@@ -803,17 +818,22 @@ Status: ${inc.status || "Mitigated"}`;
 
   // ACTION: Save Microsoft Outlook Notification Center Settings
   const handleSaveOutlookSettings = async () => {
-    if (!outlookEmailInput.trim() && !outlookWebhookInput.trim()) return;
+    if (!outlookEmailInput.trim() && !outlookWebhookInput.trim() && !outlookApiKeyInput.trim()) return;
     setSavingOutlook(true);
-    setOutlookStatusMsg("Saving Microsoft Outlook configuration...");
+    setOutlookStatusMsg("Saving Microsoft Outlook configuration & sync...");
     try {
       const res = await axios.post(`${BACKEND_HTTP_URL}/api/config/outlook-notification`, {
         email: outlookEmailInput.trim(),
-        webhook_url: outlookWebhookInput.trim()
+        webhook_url: outlookWebhookInput.trim(),
+        api_key: outlookApiKeyInput.trim()
       });
       if (res.data?.success) {
         setRecipientEmail(res.data.recipient_email || outlookEmailInput.trim());
-        setOutlookStatusMsg("✅ Microsoft Outlook Notification Center synchronized!");
+        if (res.data?.resend_active) {
+          setOutlookDeliveryActive(true);
+          setSmtpConnected(true);
+        }
+        setOutlookStatusMsg("✅ Microsoft Outlook Notification Center synchronized & saved!");
         setTimeout(() => setOutlookStatusMsg(""), 3500);
       } else {
         setOutlookStatusMsg(`❌ Failed: ${res.data?.message || 'Error'}`);
@@ -831,12 +851,15 @@ Status: ${inc.status || "Mitigated"}`;
     setOutlookStatusMsg("Dispatching live enterprise SRE test alert to Microsoft Outlook...");
     try {
       const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/test-outlook-alert`, {
-        recipient: outlookEmailInput.trim() || recipientEmail
+        recipient: outlookEmailInput.trim() || recipientEmail,
+        api_key: outlookApiKeyInput.trim()
       });
       if (res.data?.success) {
-        setOutlookStatusMsg(`✅ Delivered to Microsoft Outlook (${res.data.recipient})! [${res.data.incident_id}] Check your inbox.`);
+        setOutlookDeliveryActive(true);
+        setSmtpConnected(true);
+        setOutlookStatusMsg(`✅ Delivered to Microsoft Outlook (${res.data.recipient})! [${res.data.incident_id}] Check your Outlook inbox.`);
       } else {
-        setOutlookStatusMsg(`⚠️ Dispatched: ${res.data?.status_detail || "Logged to audit trail"}`);
+        setOutlookStatusMsg(`⚠️ ${res.data?.status_detail || "Delivery failed. Enter your Resend API Key (re_...) above."}`);
       }
     } catch (err) {
       setOutlookStatusMsg(`❌ Test dispatch error: ${err.message}`);
@@ -1871,6 +1894,44 @@ Status: ${inc.status || "Mitigated"}`;
                     outline: "none"
                   }}
                 />
+              </div>
+
+              {/* Resend Cloud HTTPS Delivery Key Input */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <label style={{ fontSize: 11.5, color: "#cbd5e1", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>Resend Cloud Delivery Key (Port 443 HTTPS)</span>
+                    <span style={{ fontSize: 10.5, color: "#38bdf8", fontWeight: 400 }}>(re_...)</span>
+                  </label>
+                  {outlookDeliveryActive ? (
+                    <span style={{ fontSize: 10.5, color: "#86efac", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                      <CheckCircle2 size={12} color="#86efac" /> Delivery Active
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 10.5, color: "#fcd34d", fontWeight: 500 }}>
+                      ⚡ Required for Render Free Tier
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  placeholder={outlookDeliveryActive ? "•••••••••••••••• (Active & Persisted)" : "Paste key (starts with re_ from your open Resend tab)"}
+                  value={outlookApiKeyInput}
+                  onChange={(e) => setOutlookApiKeyInput(e.target.value)}
+                  style={{
+                    padding: "0.6rem 0.85rem",
+                    borderRadius: 9,
+                    border: outlookDeliveryActive ? "1px solid rgba(34,197,94,0.4)" : "1px solid rgba(56,189,248,0.4)",
+                    background: "rgba(0,0,0,0.45)",
+                    color: "#f8fafc",
+                    fontSize: 12.5,
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+                <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", alignItems: "center", gap: 4 }}>
+                  <span>Copy your API key from your open <strong>API keys · Resend</strong> browser tab and paste here.</span>
+                </div>
               </div>
 
               {/* Webhook Input */}
