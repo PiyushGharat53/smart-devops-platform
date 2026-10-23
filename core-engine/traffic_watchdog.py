@@ -45,7 +45,7 @@ class TrafficWatchdog:
         jail_ip_cb: Optional[Callable] = None,
         release_ip_cb: Optional[Callable] = None,
         target_url: Optional[str] = None,
-        spike_threshold: float = 4.0,
+        spike_threshold: float = 7.0,
         *args,
         **kwargs
     ):
@@ -56,6 +56,7 @@ class TrafficWatchdog:
         self.jail_ip_cb = jail_ip_cb
         self.release_ip_cb = release_ip_cb
         self.last_jailed_ip: Optional[str] = None
+        self.recently_released: Dict[str, float] = {}
 
         self.target_url = (target_url or FINSIGHT_API_URL).rstrip("/")
         if self.target_url.endswith("/metrics"):
@@ -298,6 +299,15 @@ class TrafficWatchdog:
                     except Exception as e:
                         print(f"[WATCHDOG RELEASE IP ERROR] {e}")
 
+                if self.last_jailed_ip:
+                    self.recently_released[self.last_jailed_ip] = time.time()
+                self.current_attacker_ip = None
+                self.current_attacker_local_ip = ""
+                self.current_attacker_device_id = ""
+                self.current_attacker_device_name = ""
+                self.last_jailed_ip = None
+                self.pending_spike_ip = None
+
                 await self.log("REMEDIATED", f"[{inc_id}] Traffic normalized ({current_rps:.1f} req/s). Active defense disengaged & IP unjailed.")
 
                 rec_title = f"System Recovered: {target_service_name}"
@@ -310,7 +320,15 @@ class TrafficWatchdog:
                 self.current_incident_id = None
         else:
             # Anomaly & Spike Detection Gate
-            if current_rps > self.spike_threshold:
+            now_ts = time.time()
+            in_grace = False
+            target_check_ip = self.pending_spike_ip or self.current_attacker_ip
+            if target_check_ip and target_check_ip in self.recently_released:
+                if now_ts - self.recently_released[target_check_ip] < 30:
+                    in_grace = True
+
+            # Trigger only if above threshold and not in 30s post-release immunity (unless massive DDoS > 25 req/s)
+            if current_rps > self.spike_threshold and (not in_grace or current_rps > 25.0):
                 self.defense_mode_active = True
                 self.cooldown_counter = 0
                 self.current_incident_id = f"INC-{random.randint(1000, 9999)}"

@@ -415,6 +415,7 @@ async def send_secops_email(recipient: str, target_ip: str, incident_id: str, re
 
 def jail_ip_callback(ip_doc: dict):
     global jailed_ips, secops_recipient_email
+    now_ts = time.time()
     for existing in jailed_ips:
         if existing["ip"] == ip_doc["ip"]:
             # Differentiate devices behind shared NAT / Wi-Fi
@@ -430,6 +431,12 @@ def jail_ip_callback(ip_doc: dict):
             new_name = (ip_doc.get("device_name") or "").strip().lower()
             if ex_name and new_name and (("mobile" in ex_name) != ("mobile" in new_name)):
                 continue
+
+            # Anti-Reban Ping-Pong Shield: If recently released within 30s, do not re-quarantine automatically!
+            if existing.get("policy") == "RELEASED" and ip_doc.get("policy") == "AUTO_COOLDOWN":
+                rel_time = existing.get("released_at", 0)
+                if now_ts - rel_time < 30:
+                    return
 
             # If manually set to a locked SRE policy, do not downgrade
             if existing.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR"):
@@ -469,6 +476,7 @@ def jail_ip_callback(ip_doc: dict):
 
 def release_ip_callback(incident_id: str, target_ip: Optional[str] = None):
     global jailed_ips
+    now_ts = time.time()
     for entry in jailed_ips:
         if entry.get("incident_id") == incident_id or (target_ip and entry.get("ip") == target_ip) or (incident_id == "INC-REMEDIATED" and entry.get("policy") in (None, "AUTO_COOLDOWN")):
             # Respect manual SRE locks: only self-heal if policy is AUTO_COOLDOWN or unset
@@ -476,6 +484,7 @@ def release_ip_callback(incident_id: str, target_ip: Optional[str] = None):
                 entry["status"] = "RELEASED (Self-Healed)"
                 entry["policy"] = "RELEASED"
                 entry["auto_release_in"] = "Remediated by SRE Cooldown"
+                entry["released_at"] = now_ts
 
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
@@ -1011,20 +1020,44 @@ async def check_ip_status(
             entry_local_ip = (item.get("local_ip") or "").strip()
 
             # Device-level disambiguation behind NAT / Shared Wi-Fi:
-            # 1. Match by unique device_id if both have it:
-            if entry_dev_id and clean_dev_id:
-                if clean_dev_id != entry_dev_id:
-                    continue  # Another innocent device on the same Wi-Fi router is spared!
-            # 2. Match by local LAN IP if present:
-            elif entry_local_ip and clean_local_ip:
-                if clean_local_ip != entry_local_ip:
-                    continue  # Different local IP on the same router is spared!
-            # 3. Match by device platform category (e.g. Mobile vs Laptop):
-            elif entry_dev_name and clean_dev_name:
-                is_entry_mobile = "mobile" in entry_dev_name.lower() or "phone" in entry_dev_name.lower()
-                is_curr_mobile = "mobile" in clean_dev_name.lower() or "phone" in clean_dev_name.lower()
-                if is_entry_mobile != is_curr_mobile:
-                    continue  # Laptop is spared if Mobile attacked, or Mobile is spared if Laptop attacked!
+            # If the jail entry is scoped to a specific device, spare any client that is not this device!
+            is_device_scoped = bool(entry_dev_id or entry_local_ip or entry_dev_name)
+
+            if is_device_scoped:
+                # If the jail entry is scoped to a specific device, any client that does not provide device
+                # credentials or whose credentials do not match MUST NOT be blocked by this device-scoped entry!
+                if not (clean_dev_id or clean_local_ip or clean_dev_name):
+                    continue
+
+                # 1. Match by unique device_id:
+                if entry_dev_id:
+                    if clean_dev_id:
+                        if clean_dev_id != entry_dev_id:
+                            continue  # Different device token -> SPARE THIS CLIENT!
+                    else:
+                        # Client has no device token; verify with other attributes
+                        if clean_local_ip and entry_local_ip and clean_local_ip != entry_local_ip:
+                            continue
+                        if clean_dev_name and entry_dev_name:
+                            is_entry_mob = any(k in entry_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                            is_curr_mob = any(k in clean_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                            if is_entry_mob != is_curr_mob:
+                                continue
+                        else:
+                            # Not enough info to confirm it is the banned device -> SPARE!
+                            continue
+
+                # 2. Match by local LAN IP:
+                if entry_local_ip and clean_local_ip:
+                    if clean_local_ip != entry_local_ip:
+                        continue  # Different local IP on the same router -> SPARE THIS CLIENT!
+
+                # 3. Match by device platform category (e.g. Mobile vs Laptop):
+                if entry_dev_name and clean_dev_name:
+                    is_entry_mob = any(k in entry_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                    is_curr_mob = any(k in clean_dev_name.lower() for k in ("mobile", "phone", "android", "iphone", "ipad"))
+                    if is_entry_mob != is_curr_mob:
+                        continue  # Laptop is spared if Mobile attacked, or Mobile is spared if Laptop attacked!
 
             matched = item
             break
@@ -1035,17 +1068,21 @@ async def check_ip_status(
             matched.get("status") == "QUARANTINED"
         ) and matched.get("policy") != "RELEASED" and not str(matched.get("status", "")).startswith("RELEASED")
         
+        target_dev_id = matched.get("device_id") or clean_dev_id
+        target_dev_name = matched.get("device_name") or clean_dev_name
+        target_local_ip = matched.get("local_ip") or clean_local_ip
+
         return {
             "ip": clean_ip,
-            "local_ip": matched.get("local_ip") or clean_local_ip,
-            "device_id": matched.get("device_id") or clean_dev_id,
-            "device_name": matched.get("device_name") or clean_dev_name,
+            "local_ip": target_local_ip,
+            "device_id": target_dev_id,
+            "device_name": target_dev_name,
             "blocked": is_blocked,
             "status": matched.get("status", "ALLOWED"),
             "policy": matched.get("policy", "NONE"),
             "reason": matched.get("reason", "Volumetric violation"),
             "incident_id": matched.get("incident_id", ""),
-            "challenge_url": f"https://sentinel-aiops-engine.onrender.com/challenge?ip={clean_ip}"
+            "challenge_url": f"https://sentinel-aiops-engine.onrender.com/challenge?ip={clean_ip}&device_id={target_dev_id}&device_name={target_dev_name}&local_ip={target_local_ip}"
         }
     return {
         "ip": clean_ip,
@@ -1221,57 +1258,75 @@ async def configure_smtp(payload: dict):
 # Active Cooldown & Auto-Release Background Tasks
 active_cooldown_tasks: Dict[str, asyncio.Task] = {}
 
-async def _run_cooldown_timer(incident_id: str, ip: str, total_seconds: int, policy_name: str, label: str):
+async def _run_cooldown_timer(incident_id: str, ip: str, total_seconds: int, policy_name: str, label: str, device_id: str = ""):
     clean_ip = ip.replace("::ffff:", "").strip()
+    task_key = incident_id if incident_id else (f"{clean_ip}#{device_id}" if device_id else clean_ip)
     try:
         for remaining in range(total_seconds, 0, -1):
             await asyncio.sleep(1)
             found = False
             for entry in jailed_ips:
-                if entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
-                    found = True
-                    # Only continue countdown if policy hasn't been changed by SRE
-                    if entry.get("policy") == policy_name and (entry.get("status") == "QUARANTINED" or str(entry.get("status", "")).startswith("BLOCKED")):
-                        if remaining >= 60:
-                            mins = remaining // 60
-                            secs = remaining % 60
-                            entry["auto_release_in"] = f"{mins}m {secs}s ({label})"
-                        else:
-                            entry["auto_release_in"] = f"{remaining}s ({label})"
+                if incident_id and entry.get("incident_id") == incident_id:
+                    pass
+                elif entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+                    if device_id and entry.get("device_id") and entry.get("device_id") != device_id:
+                        continue
+                else:
+                    continue
+
+                found = True
+                # Only continue countdown if policy hasn't been changed by SRE
+                if entry.get("policy") == policy_name and (entry.get("status") == "QUARANTINED" or str(entry.get("status", "")).startswith("BLOCKED")):
+                    if remaining >= 60:
+                        mins = remaining // 60
+                        secs = remaining % 60
+                        entry["auto_release_in"] = f"{mins}m {secs}s ({label})"
                     else:
-                        return
+                        entry["auto_release_in"] = f"{remaining}s ({label})"
+                else:
+                    return
             if not found:
                 return
 
         # Cooldown completed! Auto-release now
         for entry in jailed_ips:
-            if entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
-                if entry.get("policy") == policy_name:
-                    entry["status"] = "RELEASED (Self-Healed)"
-                    entry["policy"] = "RELEASED"
-                    entry["auto_release_in"] = "Remediated by SRE Cooldown"
-                    await add_log("REMEDIATED", f"[{incident_id}] {label} elapsed ({total_seconds}s). Auto-released IP {clean_ip}. Allowlist restored.")
-                    resolve_incident_callback(incident_id, f"Auto-cooldown ({label}) completed. IP unjailed.")
-                    
-                    if traffic_watchdog.current_attacker_ip == clean_ip or traffic_watchdog.last_jailed_ip == clean_ip:
-                        traffic_watchdog.defense_mode_active = False
-                        traffic_watchdog.cooldown_counter = 0
+            if incident_id and entry.get("incident_id") == incident_id:
+                pass
+            elif entry.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+                if device_id and entry.get("device_id") and entry.get("device_id") != device_id:
+                    continue
+            else:
+                continue
+
+            if entry.get("policy") == policy_name:
+                entry["status"] = "RELEASED (Self-Healed)"
+                entry["policy"] = "RELEASED"
+                entry["auto_release_in"] = "Remediated by SRE Cooldown"
+                entry["released_at"] = time.time()
+                dev_label = entry.get("device_name") or device_id or clean_ip
+                await add_log("REMEDIATED", f"[{incident_id}] {label} elapsed ({total_seconds}s). Auto-released client {clean_ip} [{dev_label}]. Allowlist restored.")
+                resolve_incident_callback(incident_id, f"Auto-cooldown ({label}) completed. Device unjailed.")
+                
+                if traffic_watchdog.current_attacker_ip == clean_ip or traffic_watchdog.last_jailed_ip == clean_ip:
+                    traffic_watchdog.defense_mode_active = False
+                    traffic_watchdog.cooldown_counter = 0
 
     except asyncio.CancelledError:
         pass
     finally:
-        active_cooldown_tasks.pop(clean_ip, None)
+        active_cooldown_tasks.pop(task_key, None)
 
-def schedule_cooldown_task(incident_id: str, ip: str, seconds: int, policy: str, label: str):
+def schedule_cooldown_task(incident_id: str, ip: str, seconds: int, policy: str, label: str, device_id: str = ""):
     clean_ip = ip.replace("::ffff:", "").strip()
-    old_task = active_cooldown_tasks.get(clean_ip)
+    task_key = incident_id if incident_id else (f"{clean_ip}#{device_id}" if device_id else clean_ip)
+    old_task = active_cooldown_tasks.get(task_key)
     if old_task and not old_task.done():
         old_task.cancel()
     
     try:
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_run_cooldown_timer(incident_id, clean_ip, seconds, policy, label))
-        active_cooldown_tasks[clean_ip] = task
+        task = loop.create_task(_run_cooldown_timer(incident_id, clean_ip, seconds, policy, label, device_id))
+        active_cooldown_tasks[task_key] = task
     except RuntimeError:
         pass
 
@@ -1321,7 +1376,7 @@ async def report_threat(payload: dict):
         traffic_watchdog.last_jailed_ip = ip
         traffic_watchdog.current_incident_id = incident_id
         traffic_watchdog.cooldown_counter = 0
-        schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown")
+        schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown", device_id)
 
     return {"success": True, "ip": ip, "local_ip": local_ip, "device_id": device_id, "device_name": device_name, "incident_id": incident_id, "status": "QUARANTINED"}
 
@@ -1371,41 +1426,44 @@ async def set_ip_policy(payload: dict):
         jailed_ips.insert(0, matched)
 
     inc_id = matched.get("incident_id") or f"INC-{random.randint(1000, 9999)}"
+    matched_dev_id = matched.get("device_id") or dev_id
+    task_key = inc_id if inc_id else (f"{clean_ip}#{matched_dev_id}" if matched_dev_id else clean_ip)
 
     if policy in ("permanent", "ban"):
-        old_task = active_cooldown_tasks.get(clean_ip)
+        old_task = active_cooldown_tasks.get(task_key)
         if old_task and not old_task.done():
             old_task.cancel()
-        active_cooldown_tasks.pop(clean_ip, None)
+        active_cooldown_tasks.pop(task_key, None)
         matched["policy"] = "PERMANENT"
         matched["status"] = "PERMANENTLY BANNED"
         matched["auto_release_in"] = "Permanent (Manual Revocation Required)"
         matched["threat_level"] = "CRITICAL"
-        await add_log("CRITICAL", f"[FIREWALL POLICY] IP {clean_ip} permanently banned by SRE team. Rule active.")
+        await add_log("CRITICAL", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] permanently banned by SRE team. Rule active.")
     elif policy in ("5m", "5_minutes"):
         matched["policy"] = "5_MINUTES"
         matched["status"] = "BLOCKED (5 Mins)"
         matched["auto_release_in"] = "5m 0s (5-Min Cooldown)"
         matched["threat_level"] = "HIGH"
-        schedule_cooldown_task(inc_id, clean_ip, 300, "5_MINUTES", "5-Min Cooldown")
-        await add_log("WARN", f"[FIREWALL POLICY] IP {clean_ip} quarantined for 5 minutes by SRE team.")
+        schedule_cooldown_task(inc_id, clean_ip, 300, "5_MINUTES", "5-Min Cooldown", matched_dev_id)
+        await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 5 minutes by SRE team.")
     elif policy in ("1h", "1_hour"):
         matched["policy"] = "1_HOUR"
         matched["status"] = "BLOCKED (1 Hour)"
         matched["auto_release_in"] = "60m 0s (1-Hour Cooldown)"
         matched["threat_level"] = "HIGH"
-        schedule_cooldown_task(inc_id, clean_ip, 3600, "1_HOUR", "1-Hour Cooldown")
-        await add_log("WARN", f"[FIREWALL POLICY] IP {clean_ip} quarantined for 1 hour by SRE team.")
+        schedule_cooldown_task(inc_id, clean_ip, 3600, "1_HOUR", "1-Hour Cooldown", matched_dev_id)
+        await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 1 hour by SRE team.")
     elif policy in ("release", "unjail"):
-        old_task = active_cooldown_tasks.get(clean_ip)
+        old_task = active_cooldown_tasks.get(task_key)
         if old_task and not old_task.done():
             old_task.cancel()
-        active_cooldown_tasks.pop(clean_ip, None)
+        active_cooldown_tasks.pop(task_key, None)
         matched["policy"] = "RELEASED"
         matched["status"] = "RELEASED (Manual Override)"
         matched["auto_release_in"] = "Released by SRE Engineer"
+        matched["released_at"] = time.time()
         traffic_watchdog.defense_mode_active = False
-        await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed IP {clean_ip}. Allowlist restored.")
+        await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed Client {clean_ip} [{matched.get('device_name') or matched_dev_id}]. Allowlist restored.")
 
     return {"success": True, "ip": clean_ip, "entry": matched}
 
@@ -1544,13 +1602,22 @@ async def dispatch_abuse_email(payload: dict = None):
 
 @app.get("/challenge", response_class=HTMLResponse)
 @app.get("/api/security/challenge-screen", response_class=HTMLResponse)
-async def challenge_screen(request: Request, ip: Optional[str] = None):
+async def challenge_screen(
+    request: Request, 
+    ip: Optional[str] = None,
+    device_id: Optional[str] = None,
+    device_name: Optional[str] = None,
+    local_ip: Optional[str] = None
+):
     """Direct HTTP 429 Security Challenge Screen displayed to an attacking or rate-limited client."""
     client_ip = ip or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "103.57.252.110")
+    dev_id = device_id or request.headers.get("x-device-id") or ""
+    dev_name = device_name or request.headers.get("x-device-name") or ""
+    loc_ip = local_ip or request.headers.get("x-local-ip") or ""
     now_ist = get_ist_time_str()
 
     # If already released or not blocked, immediately redirect back to FinSight!
-    status_doc = await check_ip_status(client_ip)
+    status_doc = await check_ip_status(client_ip, dev_id, dev_name, loc_ip)
     if not status_doc.get("blocked"):
         return f"""
         <!DOCTYPE html>
@@ -1716,7 +1783,13 @@ async def challenge_screen(request: Request, ip: Optional[str] = None):
       <script>
         (function() {{
           var targetIp = "{client_ip}";
-          var checkUrl = "/api/security/check-ip/" + encodeURIComponent(targetIp);
+          var devId = "{dev_id}";
+          var devName = "{dev_name}";
+          var locIp = "{loc_ip}";
+          var checkUrl = "/api/security/check-ip/" + encodeURIComponent(targetIp) + 
+            "?device_id=" + encodeURIComponent(devId) + 
+            "&device_name=" + encodeURIComponent(devName) + 
+            "&local_ip=" + encodeURIComponent(locIp);
           var indicator = document.getElementById("statusIndicator");
           
           function checkStatus() {{
