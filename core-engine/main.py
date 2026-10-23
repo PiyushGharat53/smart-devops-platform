@@ -417,6 +417,16 @@ def jail_ip_callback(ip_doc: dict):
     global jailed_ips, secops_recipient_email
     for existing in jailed_ips:
         if existing["ip"] == ip_doc["ip"]:
+            # Differentiate devices behind shared NAT / Wi-Fi
+            ex_dev = (existing.get("device_id") or "").strip()
+            new_dev = (ip_doc.get("device_id") or "").strip()
+            if ex_dev and new_dev and ex_dev != new_dev:
+                continue
+            ex_name = (existing.get("device_name") or "").strip().lower()
+            new_name = (ip_doc.get("device_name") or "").strip().lower()
+            if ex_name and new_name and (("mobile" in ex_name) != ("mobile" in new_name)):
+                continue
+
             # If manually set to a locked SRE policy, do not downgrade
             if existing.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR"):
                 existing["requests_blocked"] = existing.get("requests_blocked", 0) + ip_doc.get("requests_blocked", 1)
@@ -976,10 +986,34 @@ async def update_recipient_email(payload: dict):
     return {"success": False, "error": "Invalid email address"}
 
 @app.get("/api/security/check-ip/{ip}")
-async def check_ip_status(ip: str):
-    """Enables FinSight Gateway / Frontend to check if an IP is currently quarantined or banned."""
+async def check_ip_status(ip: str, device_id: Optional[str] = None, device_name: Optional[str] = None):
+    """Enables FinSight Gateway / Frontend to check if an IP or specific device is currently quarantined or banned."""
     clean_ip = ip.replace("::ffff:", "").strip()
-    matched = next((item for item in jailed_ips if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip), None)
+    clean_dev_id = (device_id or "").strip()
+    clean_dev_name = (device_name or "").strip()
+
+    matched = None
+    for item in jailed_ips:
+        entry_ip = item.get("ip", "").replace("::ffff:", "").strip()
+        if entry_ip == clean_ip:
+            entry_dev_id = (item.get("device_id") or "").strip()
+            entry_dev_name = (item.get("device_name") or "").strip()
+
+            # Device-level disambiguation behind NAT / Shared Wi-Fi:
+            # 1. If quarantined item specifically targeted a device_id:
+            if entry_dev_id and clean_dev_id:
+                if clean_dev_id != entry_dev_id:
+                    continue  # Another innocent device on the same Wi-Fi router is spared!
+            # 2. Or if quarantined item targeted a specific device category (e.g. Mobile vs Laptop):
+            elif entry_dev_name and clean_dev_name:
+                is_entry_mobile = "mobile" in entry_dev_name.lower() or "phone" in entry_dev_name.lower()
+                is_curr_mobile = "mobile" in clean_dev_name.lower() or "phone" in clean_dev_name.lower()
+                if is_entry_mobile != is_curr_mobile:
+                    continue  # Laptop is spared if Mobile attacked, or Mobile is spared if Laptop attacked!
+
+            matched = item
+            break
+
     if matched:
         is_blocked = (
             matched.get("policy") in ("PERMANENT", "5_MINUTES", "1_HOUR") or
@@ -988,6 +1022,8 @@ async def check_ip_status(ip: str):
         
         return {
             "ip": clean_ip,
+            "device_id": matched.get("device_id") or clean_dev_id,
+            "device_name": matched.get("device_name") or clean_dev_name,
             "blocked": is_blocked,
             "status": matched.get("status", "ALLOWED"),
             "policy": matched.get("policy", "NONE"),
@@ -997,19 +1033,25 @@ async def check_ip_status(ip: str):
         }
     return {
         "ip": clean_ip,
+        "device_id": clean_dev_id,
+        "device_name": clean_dev_name,
         "blocked": False,
         "status": "ALLOWED",
         "policy": "NONE"
     }
 
 @app.get("/api/security/check-client")
-async def check_client_status(request: Request):
-    """Checks the requesting client's IP address directly."""
+async def check_client_status(request: Request, device_id: Optional[str] = None, device_name: Optional[str] = None):
+    """Checks the requesting client's IP and Device ID directly."""
     forwarded = request.headers.get("x-forwarded-for")
     client_ip = (forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "127.0.0.1")).replace("::ffff:", "").strip()
+    
+    dev_id = device_id or request.headers.get("x-device-id") or ""
+    dev_name = device_name or request.headers.get("x-device-name") or ""
+    
     if client_ip and client_ip not in ("127.0.0.1", "::1", "unknown"):
         traffic_watchdog.current_attacker_ip = client_ip
-    return await check_ip_status(client_ip)
+    return await check_ip_status(client_ip, dev_id, dev_name)
 
 @app.get("/api/security/smtp-status")
 async def get_smtp_status():
@@ -1206,8 +1248,10 @@ def schedule_cooldown_task(incident_id: str, ip: str, seconds: int, policy: str,
 
 @app.post("/api/security/report-threat")
 async def report_threat(payload: dict):
-    """Called automatically by FinSight Gateway when an IP exceeds rate limits."""
+    """Called automatically by FinSight Gateway when an IP/device exceeds rate limits."""
     ip = str((payload or {}).get("ip", "")).strip()
+    device_id = str((payload or {}).get("device_id", "")).strip()
+    device_name = str((payload or {}).get("device_name", "")).strip()
     reason = str((payload or {}).get("reason", "Volumetric rate limit exceeded on FinSight Gateway")).strip()
     policy = str((payload or {}).get("policy", "AUTO_COOLDOWN")).strip()
     if not ip:
@@ -1217,6 +1261,8 @@ async def report_threat(payload: dict):
     auto_release_str = "12s (Self-Healing Cooldown)" if policy == "AUTO_COOLDOWN" else "Permanent (Manual Revocation Required)"
     entry = {
         "ip": ip,
+        "device_id": device_id,
+        "device_name": device_name,
         "threat_level": "CRITICAL",
         "incident_id": incident_id,
         "reason": reason,
@@ -1228,7 +1274,8 @@ async def report_threat(payload: dict):
         "auto_release_in": auto_release_str
     }
     jail_ip_callback(entry)
-    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}. Reason: {reason}")
+    dev_str = f" [{device_name} ({device_id})]" if (device_name or device_id) else ""
+    await add_log("CRITICAL", f"[{incident_id}] Active Defense Shield Engaged. Jailed rogue IP {ip}{dev_str}. Reason: {reason}")
     
     # Engage watchdog state and launch live 12s auto-cooldown countdown
     if policy == "AUTO_COOLDOWN":
@@ -1239,7 +1286,7 @@ async def report_threat(payload: dict):
         traffic_watchdog.cooldown_counter = 0
         schedule_cooldown_task(incident_id, ip, 12, "AUTO_COOLDOWN", "Self-Healing Cooldown")
 
-    return {"success": True, "ip": ip, "incident_id": incident_id, "status": "QUARANTINED"}
+    return {"success": True, "ip": ip, "device_id": device_id, "device_name": device_name, "incident_id": incident_id, "status": "QUARANTINED"}
 
 @app.get("/api/security/jailed-ips")
 async def get_jailed_ips():
@@ -1252,17 +1299,30 @@ async def set_ip_policy(payload: dict):
     ip = str((payload or {}).get("ip", "")).strip()
     policy = str((payload or {}).get("policy", "release")).lower().strip()
     reason = str((payload or {}).get("reason", "Manual SRE Security Policy Enforcement")).strip()
+    dev_id = str((payload or {}).get("device_id", "")).strip()
+    inc_id_req = str((payload or {}).get("incident_id", "")).strip()
 
     if not ip:
         return {"success": False, "error": "IP address is required"}
 
     clean_ip = ip.replace("::ffff:", "").strip()
-    matched = next((item for item in jailed_ips if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip), None)
+    matched = None
+    for item in jailed_ips:
+        if inc_id_req and item.get("incident_id") == inc_id_req:
+            matched = item
+            break
+        if item.get("ip", "").replace("::ffff:", "").strip() == clean_ip:
+            if dev_id and item.get("device_id") and dev_id != item.get("device_id"):
+                continue
+            matched = item
+            break
+
     if not matched:
         matched = {
             "ip": clean_ip,
+            "device_id": dev_id,
             "threat_level": "CRITICAL" if policy == "permanent" else "HIGH",
-            "incident_id": f"INC-SRE-{random.randint(1000, 9999)}",
+            "incident_id": inc_id_req or f"INC-SRE-{random.randint(1000, 9999)}",
             "reason": reason,
             "jailed_at": get_ist_time_str(),
             "status": "QUARANTINED",
@@ -1320,6 +1380,100 @@ async def manual_block_ip(payload: dict):
 @app.post("/api/security/release-ip/{ip}")
 async def release_jailed_ip(ip: str):
     return await set_ip_policy({"ip": ip, "policy": "release"})
+
+@app.post("/api/system/clear-records")
+async def clear_system_records(payload: dict = None):
+    """Clears all quarantined IP records, active cooldown tasks, audit logs, and incidents from memory and MongoDB."""
+    global jailed_ips, live_logs, live_incidents
+    
+    # 1. Cancel all active cooldown timers
+    for ip, task in list(active_cooldown_tasks.items()):
+        if task and not task.done():
+            task.cancel()
+    active_cooldown_tasks.clear()
+    
+    # 2. Clear quarantined IPs
+    cleared_ips_count = len(jailed_ips)
+    jailed_ips.clear()
+    
+    # 3. Clear logs
+    cleared_logs_count = len(live_logs)
+    live_logs.clear()
+    
+    # 4. Clear incidents
+    cleared_incidents_count = len(live_incidents)
+    live_incidents.clear()
+    
+    # 5. Clear MongoDB collections if connected
+    if mongo_connected:
+        try:
+            if logs_collection is not None:
+                await logs_collection.delete_many({})
+            if incidents_collection is not None:
+                await incidents_collection.delete_many({})
+        except Exception as e:
+            print(f"[MONGO CLEAR FAILED] {e}")
+            
+    # 6. Reset watchdog defense mode
+    traffic_watchdog.defense_mode_active = False
+    traffic_watchdog.cooldown_counter = 0
+    traffic_watchdog.current_attacker_ip = None
+    traffic_watchdog.last_jailed_ip = None
+    
+    # 7. Add a clean confirmation log
+    now_ist = get_ist_time_str()
+    init_log = {
+        "id": random.randint(10000, 99999),
+        "level": "INFO",
+        "msg": f"[SYSTEM PURGE] All quarantined records ({cleared_ips_count}), audit logs ({cleared_logs_count}), and incidents ({cleared_incidents_count}) cleared by SRE command. State clean.",
+        "time": now_ist
+    }
+    live_logs.append(init_log)
+    
+    return {
+        "success": True,
+        "message": "System records, quarantined IPs, and audit logs cleared successfully.",
+        "cleared": {
+            "jailed_ips": cleared_ips_count,
+            "logs": cleared_logs_count,
+            "incidents": cleared_incidents_count
+        }
+    }
+
+@app.post("/api/security/clear-jailed")
+async def clear_jailed_ips_endpoint():
+    """Clears all active and historical quarantined IPs from memory."""
+    global jailed_ips
+    for ip, task in list(active_cooldown_tasks.items()):
+        if task and not task.done():
+            task.cancel()
+    active_cooldown_tasks.clear()
+    count = len(jailed_ips)
+    jailed_ips.clear()
+    traffic_watchdog.defense_mode_active = False
+    traffic_watchdog.cooldown_counter = 0
+    await add_log("INFO", f"[FIREWALL PURGE] Quarantined IP list ({count} records) cleared by SRE command.")
+    return {"success": True, "cleared_count": count}
+
+@app.post("/api/logs/clear")
+async def clear_logs_endpoint():
+    """Clears all AIOps execution logs from memory and MongoDB."""
+    global live_logs
+    count = len(live_logs)
+    live_logs.clear()
+    if mongo_connected and logs_collection is not None:
+        try:
+            await logs_collection.delete_many({})
+        except Exception:
+            pass
+    now_ist = get_ist_time_str()
+    live_logs.append({
+        "id": random.randint(10000, 99999),
+        "level": "INFO",
+        "msg": f"[AUDIT PURGE] AIOps log stream cleared by SRE command.",
+        "time": now_ist
+    })
+    return {"success": True, "cleared_count": count}
 
 @app.post("/api/security/dispatch-abuse-email")
 async def dispatch_abuse_email(payload: dict = None):

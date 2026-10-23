@@ -6,7 +6,7 @@ import {
   Cpu, MemoryStick, HardDrive, Wifi, Zap, Loader2, CheckCircle2,
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
   CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck, Send, FileCode,
-  Flame, BellRing, Settings, RefreshCw, Check, ShieldAlert, ShieldCheck, Mail, UserX, ExternalLink, HelpCircle, Ban
+  Flame, BellRing, Settings, RefreshCw, Check, ShieldAlert, ShieldCheck, Mail, UserX, ExternalLink, HelpCircle, Ban, Trash2
 } from "lucide-react";
 import LiveTrafficChart from "./components/LiveTrafficChart";
 
@@ -315,6 +315,9 @@ export default function App() {
   const [showThreatMatrixModal, setShowThreatMatrixModal] = useState(false);
   const [inspectingChallenge, setInspectingChallenge] = useState(null);
   const [emailSuccessMsg, setEmailSuccessMsg] = useState("");
+  const [isClearingAll, setIsClearingAll] = useState(false);
+  const [isClearingJailed, setIsClearingJailed] = useState(false);
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
 
   // Live Gmail / SMTP Delivery State
   const [showSmtpModal, setShowSmtpModal] = useState(false);
@@ -564,19 +567,24 @@ export default function App() {
   };
 
   // ACTION: Technical Team Duration Policy Decision (5m, 1h, Permanent Ban, Release)
-  const handleSetIpPolicy = async (ip, policy, reason = "Manual SRE Security Policy Enforcement") => {
-    setPolicyUpdatingIps((prev) => ({ ...prev, [ip]: true }));
+  const handleSetIpPolicy = async (ip, policy, reason = "Manual SRE Security Policy Enforcement", deviceId = null, incidentId = null) => {
+    const updatingKey = incidentId || `${ip}_${deviceId || ""}`;
+    setPolicyUpdatingIps((prev) => ({ ...prev, [updatingKey]: true, [ip]: true }));
     try {
       const res = await axios.post(`${BACKEND_HTTP_URL}/api/security/set-ip-policy`, {
         ip,
         policy,
-        reason
+        reason,
+        device_id: deviceId,
+        incident_id: incidentId
       });
       if (res.data?.entry) {
         setJailedIps((prev) => {
-          const exists = prev.some((j) => j.ip === ip);
-          if (exists) {
-            return prev.map((j) => (j.ip === ip ? res.data.entry : j));
+          const matchIdx = prev.findIndex((j) => (incidentId ? j.incident_id === incidentId : j.ip === ip));
+          if (matchIdx !== -1) {
+            const next = [...prev];
+            next[matchIdx] = res.data.entry;
+            return next;
           }
           return [res.data.entry, ...prev];
         });
@@ -586,7 +594,7 @@ export default function App() {
     } catch (err) {
       console.error("Failed to set IP policy", err);
     } finally {
-      setPolicyUpdatingIps((prev) => ({ ...prev, [ip]: false }));
+      setPolicyUpdatingIps((prev) => ({ ...prev, [updatingKey]: false, [ip]: false }));
     }
   };
 
@@ -644,6 +652,56 @@ export default function App() {
       setTimeout(() => setEmailSuccessMsg(""), 3500);
     } finally {
       setDispatchingIps((prev) => ({ ...prev, [targetIp]: false }));
+    }
+  };
+
+  // ACTION: Clear All Quarantined Records, Audit Logs, and Incidents
+  const handleClearAllRecords = async () => {
+    setIsClearingAll(true);
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/system/clear-records`);
+      if (res.data?.success) {
+        setJailedIps([]);
+        setLogs([]);
+        setIncidents([]);
+        setDefenseModeActive(false);
+        setEmailSuccessMsg("🧹 System Purged: All historical logs, incidents & quarantined IPs cleared!");
+        setTimeout(() => setEmailSuccessMsg(""), 4500);
+      }
+    } catch (err) {
+      console.error("Failed to clear records", err);
+    } finally {
+      setIsClearingAll(false);
+    }
+  };
+
+  // ACTION: Clear Quarantined IPs List
+  const handleClearJailedIps = async () => {
+    setIsClearingJailed(true);
+    try {
+      await axios.post(`${BACKEND_HTTP_URL}/api/security/clear-jailed`);
+      setJailedIps([]);
+      setEmailSuccessMsg("🧹 Quarantined IPs cleared from active firewall jail!");
+      setTimeout(() => setEmailSuccessMsg(""), 3500);
+    } catch (err) {
+      console.error("Failed to clear jailed IPs", err);
+    } finally {
+      setIsClearingJailed(false);
+    }
+  };
+
+  // ACTION: Clear AIOps Execution Logs
+  const handleClearLogs = async () => {
+    setIsClearingLogs(true);
+    try {
+      await axios.post(`${BACKEND_HTTP_URL}/api/logs/clear`);
+      setLogs([]);
+      setEmailSuccessMsg("🧹 AIOps execution log stream cleared!");
+      setTimeout(() => setEmailSuccessMsg(""), 3500);
+    } catch (err) {
+      console.error("Failed to clear logs", err);
+    } finally {
+      setIsClearingLogs(false);
     }
   };
 
@@ -797,6 +855,24 @@ export default function App() {
             >
               <FileCode size={13} color="#c4b5fd" />
               <span>.sentinel-config.yml</span>
+            </button>
+
+            {/* Master Clear System Records Button */}
+            <button
+              onClick={handleClearAllRecords}
+              disabled={isClearingAll}
+              className="sso-btn"
+              title="Purge all quarantined IPs, audit logs, and incidents from memory and MongoDB"
+              style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "0.45rem 0.85rem",
+                borderRadius: 12, fontSize: 12,
+                border: "1px solid rgba(239,68,68,0.35)",
+                background: "rgba(239,68,68,0.1)",
+                color: "#fca5a5"
+              }}
+            >
+              {isClearingAll ? <Loader2 size={13} className="sso-spin" /> : <Trash2 size={13} color="#f87171" />}
+              <span>{isClearingAll ? "Purging..." : "Clear Records"}</span>
             </button>
 
             <WorkspaceSwitcher workspaces={workspaces} activeWorkspace={activeWorkspace} onSelect={setWorkspaceId} />
@@ -1005,6 +1081,22 @@ export default function App() {
                 <ShieldCheck size={13} color="#38bdf8" />
                 <span>Threat Matrix</span>
               </button>
+
+              {/* Clear Quarantined List Button */}
+              <button
+                onClick={handleClearJailedIps}
+                disabled={isClearingJailed || jailedIps.length === 0}
+                className="sso-btn"
+                title="Clear quarantined IP list"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "0.4rem 0.8rem",
+                  borderRadius: 10, fontSize: 12, border: "1px solid rgba(239,68,68,0.35)",
+                  background: "rgba(239,68,68,0.1)", color: "#fca5a5"
+                }}
+              >
+                <Trash2 size={13} color="#f87171" />
+                <span>{isClearingJailed ? "Clearing..." : "🧹 Clear List"}</span>
+              </button>
             </div>
           </div>
 
@@ -1192,7 +1284,7 @@ export default function App() {
 
                       <div>
                         <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "#f8fafc", fontFamily: "monospace" }}>
-                          {entry.ip} <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11.5 }}>· {entry.incident_id}</span>
+                          {entry.ip} {entry.device_name && <span style={{ color: "#38bdf8", fontWeight: 500, fontSize: 11.5, background: "rgba(56,189,248,0.15)", border: "1px solid rgba(56,189,248,0.3)", padding: "1px 7px", borderRadius: 4, marginLeft: 6 }}>📱 {entry.device_name}</span>} <span style={{ color: "#94a3b8", fontWeight: 400, fontSize: 11.5 }}>· {entry.incident_id}</span>
                         </p>
                         <p style={{ margin: "2px 0 0 0", fontSize: 11.5, color: "#94a3b8" }}>
                           {entry.reason} &middot; <strong style={{ color: "#fca5a5" }}>{entry.requests_blocked || 20} blocked (HTTP 429)</strong>
@@ -1208,10 +1300,10 @@ export default function App() {
                       {/* SRE Policy Control Buttons */}
                       {!isReleased && (
                         <button
-                          onClick={() => handleSetIpPolicy(entry.ip, "release")}
+                          onClick={() => handleSetIpPolicy(entry.ip, "release", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
                           disabled={isPolicyUpdating}
                           className="sso-btn"
-                          title="Instantly unjail and allow traffic from this IP"
+                          title="Instantly unjail and allow traffic from this device"
                           style={{
                             display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.65rem",
                             borderRadius: 6, fontSize: 11, border: "1px solid rgba(34,197,94,0.35)",
@@ -1224,7 +1316,7 @@ export default function App() {
                       )}
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "5m")}
+                        onClick={() => handleSetIpPolicy(entry.ip, "5m", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
                         disabled={isPolicyUpdating || is5Min}
                         className="sso-btn"
                         title="Enforce 5-minute quarantine"
@@ -1240,7 +1332,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "1h")}
+                        onClick={() => handleSetIpPolicy(entry.ip, "1h", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
                         disabled={isPolicyUpdating || is1Hour}
                         className="sso-btn"
                         title="Enforce 1-hour quarantine"
@@ -1256,10 +1348,10 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => handleSetIpPolicy(entry.ip, "permanent")}
+                        onClick={() => handleSetIpPolicy(entry.ip, "permanent", "Manual SRE Security Policy Enforcement", entry.device_id, entry.incident_id)}
                         disabled={isPolicyUpdating || isPermanent}
                         className="sso-btn"
-                        title="Permanently ban this IP address"
+                        title="Permanently ban this device"
                         style={{
                           display: "flex", alignItems: "center", gap: 4, padding: "0.3rem 0.6rem",
                           borderRadius: 6, fontSize: 11, border: "1px solid rgba(239,68,68,0.45)",
@@ -1336,6 +1428,23 @@ export default function App() {
                 <span>{mongoConnected ? "MongoDB Atlas · 30-Day TTL Auto-Purge" : "Audit Store: Ready for MongoDB"}</span>
               </div>
               <span style={{ fontSize: 11, color: "#64748b" }}>Live Polling: 2.0s</span>
+
+              {/* Clear AIOps Logs Button */}
+              <button
+                onClick={handleClearLogs}
+                disabled={isClearingLogs || logs.length === 0}
+                className="sso-btn"
+                title="Clear AIOps execution logs from screen and MongoDB"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, fontSize: 11,
+                  color: "#fca5a5", background: "rgba(239,68,68,0.12)",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  padding: "3px 10px", borderRadius: 9999
+                }}
+              >
+                <Trash2 size={11} color="#f87171" />
+                <span>{isClearingLogs ? "Clearing..." : "🧹 Clear Logs"}</span>
+              </button>
             </div>
           </div>
           <div ref={terminalRef} className="sso-scroll" style={{ height: 260, overflowY: "auto", borderRadius: 12, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.06)", padding: 16, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "12.5px", lineHeight: 1.65 }}>
