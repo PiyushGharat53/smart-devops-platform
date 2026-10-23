@@ -15,11 +15,11 @@ import {
     Smartphone 
 } from 'lucide-react';
 
-// Custom Tooltip for Graph 1: Production Platform Traffic Load
+// Custom Tooltip for Graph 1: Live Site Traffic & Active Visitors
 function PlatformTooltip({ active, payload, label }) {
     if (active && payload && payload.length) {
         const data = payload[0].payload;
-        const val = data.platform_rps !== undefined ? data.platform_rps : (data.rps || 0);
+        const val = data.site_traffic !== undefined ? data.site_traffic : (data.active_users !== undefined ? data.active_users : Math.round(data.platform_rps || 0));
         return (
             <div style={{
                 backgroundColor: '#0f0d22',
@@ -31,7 +31,10 @@ function PlatformTooltip({ active, payload, label }) {
             }}>
                 <div style={{ color: '#94a3b8', marginBottom: 4, fontWeight: 500 }}>{label} (IST)</div>
                 <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: 14 }}>
-                    Platform Load: {Number(val).toFixed(2)} req/s
+                    Live Site Traffic: {val} {val === 1 ? 'User' : 'Users'} Online
+                </div>
+                <div style={{ color: val > 0 ? '#86efac' : '#94a3b8', fontSize: 11, marginTop: 4 }}>
+                    {val > 0 ? '🟢 Active Visitor Session Detected' : '⚪ Zero Active Traffic (Site closed on all devices)'}
                 </div>
                 <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>
                     Latency: {data.latency || 42}ms &middot; DB: {data.db_status || 'CONNECTED'} &middot; Heap: {data.heap_used || 20.1}MB
@@ -43,11 +46,11 @@ function PlatformTooltip({ active, payload, label }) {
 }
 
 // Custom Tooltip for Graph 2: Threat Velocity Matrix & Hacker Tracker
-function ThreatTooltip({ active, payload, label }) {
+function ThreatTooltip({ active, payload, label, spikeLimit = 4.0 }) {
     if (active && payload && payload.length) {
         const data = payload[0].payload;
         const val = data.threat_rps !== undefined ? data.threat_rps : 0;
-        const isSpike = val >= 2.0;
+        const isSpike = val >= spikeLimit;
         const targetIp = data.attacker_local_ip || (data.attacker_ip && data.attacker_ip !== 'None' ? data.attacker_ip : '');
         const devName = data.attacker_device_name || '';
 
@@ -61,7 +64,7 @@ function ThreatTooltip({ active, payload, label }) {
                 fontSize: 12
             }}>
                 <div style={{ color: '#94a3b8', marginBottom: 4, fontWeight: 500 }}>{label} (IST)</div>
-                <div style={{ color: isSpike ? '#ef4444' : '#22c55e', fontWeight: 700, fontSize: 14 }}>
+                <div style={{ color: isSpike ? '#ef4444' : (val > 0 ? '#f59e0b' : '#22c55e'), fontWeight: 700, fontSize: 14 }}>
                     Attacker Velocity: {Number(val).toFixed(2)} req/s
                 </div>
                 {targetIp && (
@@ -70,8 +73,12 @@ function ThreatTooltip({ active, payload, label }) {
                         Target: {targetIp} {devName ? `(${devName})` : ''}
                     </div>
                 )}
-                <div style={{ color: isSpike ? '#fca5a5' : '#86efac', fontSize: 11, marginTop: 4 }}>
-                    Status: {isSpike ? '🚨 Spiking Over 2.0 req/s Limit (Quarantining)' : '🟢 Flatline 0.0 req/s (Peaceful)'}
+                <div style={{ color: isSpike ? '#fca5a5' : (val > 0 ? '#fde68a' : '#86efac'), fontSize: 11, marginTop: 4 }}>
+                    Status: {isSpike 
+                        ? `🚨 Exceeded Spike Limit (>${spikeLimit.toFixed(1)} req/s - Quarantining)` 
+                        : (val > 0.5 
+                            ? `🟡 Moderate Traffic (${Number(val).toFixed(2)} req/s - Below ${spikeLimit.toFixed(1)} limit)` 
+                            : '🟢 Flatline 0.0 req/s (Peaceful)')}
                 </div>
             </div>
         );
@@ -83,7 +90,7 @@ export default function LiveTrafficChart({
     trafficHistory = [],
     defenseModeActive = false
 }) {
-    const SPIKE_LIMIT = 6.0;
+    const SPIKE_LIMIT = 4.0;
     const latestData = trafficHistory.length > 0 ? trafficHistory[trafficHistory.length - 1] : {};
 
     const currentPlatformRps = latestData.platform_rps !== undefined ? latestData.platform_rps : (latestData.rps || 0);
@@ -175,11 +182,11 @@ export default function LiveTrafficChart({
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <Radio size={14} color="#38bdf8" />
                                 <span style={{ fontSize: 13.5, fontWeight: 600, color: '#f1f5f9' }}>
-                                    Production Platform Traffic Load
+                                    Live Site Traffic &amp; Active Visitors
                                 </span>
                             </div>
                             <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0 0' }}>
-                                Total aggregate requests across all users &middot; FinSight Gateway
+                                Real-time concurrent visitors browsing FinSight &middot; Live Traffic Indicator
                             </p>
                         </div>
 
@@ -192,7 +199,7 @@ export default function LiveTrafficChart({
                             color: '#38bdf8',
                             border: '1px solid rgba(56, 189, 248, 0.25)'
                         }}>
-                            Site Traffic (RPS)
+                            {Math.round(currentPlatformRps)} Active {Math.round(currentPlatformRps) === 1 ? 'User' : 'Users'}
                         </span>
                     </div>
 
@@ -200,9 +207,11 @@ export default function LiveTrafficChart({
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 6 }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                             <span style={{ fontSize: 26, fontWeight: 700, color: '#38bdf8', letterSpacing: '-0.02em', fontFamily: 'monospace' }}>
-                                {Number(currentPlatformRps).toFixed(1)}
+                                {Math.round(currentPlatformRps)}
                             </span>
-                            <span style={{ fontSize: 11.5, color: '#94a3b8' }}>req/s (Total Load)</span>
+                            <span style={{ fontSize: 11.5, color: '#94a3b8' }}>
+                                Active {Math.round(currentPlatformRps) === 1 ? 'User' : 'Users'} (Site Traffic)
+                            </span>
                         </div>
 
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: '#94a3b8' }}>
@@ -352,7 +361,7 @@ export default function LiveTrafficChart({
                                     fontSize={10} 
                                     domain={[0, (dataMax) => Math.max(8, Math.ceil(dataMax + 2))]} 
                                 />
-                                <Tooltip content={<ThreatTooltip />} />
+                                <Tooltip content={<ThreatTooltip spikeLimit={SPIKE_LIMIT} />} />
                                 <ReferenceLine 
                                     y={SPIKE_LIMIT} 
                                     stroke="#ef4444" 

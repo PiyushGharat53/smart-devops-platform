@@ -506,7 +506,10 @@ export default function App() {
         setSmtpConnected(true);
         setShowSmtpModal(false);
         setRecipientEmail(smtpUserInput.trim());
-        setEmailSuccessMsg(`✅ Live Gmail SMTP Connected! Test email sent to ${smtpUserInput.trim()}`);
+        axios.post(`${BACKEND_HTTP_URL}/api/security/update-recipient-email`, {
+          email: smtpUserInput.trim()
+        }).catch(() => {});
+        setEmailSuccessMsg(`✅ Live Alert Delivery Connected! Verified for ${smtpUserInput.trim()}`);
         setTimeout(() => setEmailSuccessMsg(""), 6000);
       } else {
         setSmtpErrorMsg(res.data?.error || "Failed to authenticate SMTP credentials");

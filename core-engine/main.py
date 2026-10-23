@@ -112,6 +112,21 @@ async def init_mongodb_ttl():
             live_incidents.extend(db_inc)
 
         await add_log("INFO", "MongoDB Atlas Connected: 30-Day TTL auto-purge retention active.")
+
+        # Hydrate saved SMTP config & recipient email from MongoDB Atlas
+        try:
+            settings_doc = await sentinel_db["settings"].find_one({"_id": "smtp_config"})
+            if settings_doc:
+                saved_smtp = settings_doc.get("smtp_config")
+                if saved_smtp and isinstance(saved_smtp, dict):
+                    smtp_config.update(saved_smtp)
+                saved_recip = settings_doc.get("secops_recipient_email")
+                if saved_recip and "@" in saved_recip:
+                    secops_recipient_email = saved_recip
+                    print(f"[MONGO ATLAS SETTINGS] Loaded SecOps recipient email: {secops_recipient_email}")
+        except Exception as ex:
+            print(f"[MONGO ATLAS SETTINGS WARN] {ex}")
+
         return True
     except Exception as e:
         mongo_connected = False
@@ -333,6 +348,13 @@ async def send_secops_email(
     dev_str = f"[{device_name}] " if device_name else ""
     subject = f"🚨 [Sentinel SecOps Alert] Active Defense Quarantine: {dev_str}{local_ip or target_ip}"
     
+    # Ensure recipient is the actual configured recipient or user email
+    effective_recipient = recipient
+    if (not effective_recipient or "@finsight.io" in effective_recipient) and smtp_config.get("user") and "@" in smtp_config.get("user"):
+        effective_recipient = smtp_config["user"]
+    elif not effective_recipient:
+        effective_recipient = secops_recipient_email
+    
     html_content = f"""
     <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
@@ -405,7 +427,7 @@ async def send_secops_email(
                     "https://api.resend.com/emails",
                     data=json.dumps({
                         "from": "Sentinel SmartOps <onboarding@resend.dev>",
-                        "to": [recipient],
+                        "to": [effective_recipient],
                         "subject": subject,
                         "html": html_content
                     }).encode("utf-8"),
@@ -419,7 +441,7 @@ async def send_secops_email(
                     return json.loads(resp.read().decode("utf-8"))
             loop = asyncio.get_running_loop()
             res = await loop.run_in_executor(None, _send_resend)
-            return True, f"Delivered via Resend Cloud API (HTTPS) to {recipient} [ID: {res.get('id', 'ok')}]"
+            return True, f"Delivered via Resend Cloud API (HTTPS) to {effective_recipient} [ID: {res.get('id', 'ok')}]"
         except Exception as e:
             return False, f"Resend API Error: {str(e)}"
 
@@ -432,7 +454,7 @@ async def send_secops_email(
                     "https://api.brevo.com/v3/smtp/email",
                     data=json.dumps({
                         "sender": {"name": "Sentinel SmartOps", "email": "alerts@sentinelsmartops.io"},
-                        "to": [{"email": recipient}],
+                        "to": [{"email": effective_recipient}],
                         "subject": subject,
                         "htmlContent": html_content
                     }).encode("utf-8"),
@@ -445,7 +467,7 @@ async def send_secops_email(
                     return json.loads(resp.read().decode("utf-8"))
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _send_brevo)
-            return True, f"Delivered via Brevo Cloud API (HTTPS) to {recipient}"
+            return True, f"Delivered via Brevo Cloud API (HTTPS) to {effective_recipient}"
         except Exception as e:
             return False, f"Brevo API Error: {str(e)}"
 
@@ -461,23 +483,23 @@ async def send_secops_email(
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject
                 msg["From"] = f"Sentinel SmartOps <{smtp_user}>"
-                msg["To"] = recipient
+                msg["To"] = effective_recipient
                 msg.attach(MIMEText(text_content, "plain"))
                 msg.attach(MIMEText(html_content, "html"))
                 with smtplib.SMTP(smtp_host, smtp_port, timeout=8) as server:
                     server.starttls()
                     server.login(smtp_user, smtp_pass)
-                    server.sendmail(smtp_user, [recipient], msg.as_string())
+                    server.sendmail(smtp_user, [effective_recipient], msg.as_string())
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _sync_send)
-            return True, f"Delivered via SMTP ({smtp_host}) to {recipient}"
+            return True, f"Delivered via SMTP ({smtp_host}) to {effective_recipient}"
         except Exception as e:
             err_str = str(e)
             if "Network is unreachable" in err_str or "101" in err_str:
                 return False, "Render Free Cloud blocks raw outbound Port 587. Please use a free Resend API Key (re_...) from resend.com for HTTPS Port 443 delivery."
             return False, f"SMTP Error: {err_str}"
     else:
-        return True, f"Alert recorded & queued for {recipient} (Logged to Atlas Security Audit Trail)"
+        return True, f"Alert recorded & queued for {effective_recipient} (Logged to Atlas Security Audit Trail)"
 
 def jail_ip_callback(ip_doc: dict):
     global jailed_ips, secops_recipient_email
@@ -562,6 +584,16 @@ def release_ip_callback(incident_id: str, target_ip: Optional[str] = None):
                 entry["auto_release_in"] = "Remediated by SRE Cooldown"
                 entry["released_at"] = now_ts
 
+active_site_visitors: Dict[str, Dict[str, Any]] = {}
+
+def get_active_visitor_count() -> int:
+    now = time.time()
+    # Heartbeats arrive every 2.5s from active clients. Purge after 7s of inactivity.
+    stale = [k for k, v in active_site_visitors.items() if now - v.get("last_seen", 0) > 7.0]
+    for k in stale:
+        del active_site_visitors[k]
+    return len(active_site_visitors)
+
 # Initialize the Traffic Watchdog Engine
 traffic_watchdog = TrafficWatchdog(
     dispatch_alert_cb=send_dispatch_alert,
@@ -570,8 +602,9 @@ traffic_watchdog = TrafficWatchdog(
     resolve_incident_cb=resolve_incident_callback,
     jail_ip_cb=jail_ip_callback,
     release_ip_cb=release_ip_callback,
+    get_active_visitors_cb=get_active_visitor_count,
     target_url=FINSIGHT_API_URL,
-    spike_threshold=6.0
+    spike_threshold=4.0
 )
 
 # Background Health Checker
@@ -1174,6 +1207,15 @@ async def check_client_status(
     loc_ip = local_ip or request.headers.get("x-local-ip") or ""
     
     if client_ip and client_ip not in ("127.0.0.1", "::1", "unknown"):
+        # Register active site visitor
+        client_key = dev_id or (f"{loc_ip}#{dev_name}" if loc_ip else f"{client_ip}#{dev_name or 'client'}")
+        active_site_visitors[client_key] = {
+            "ip": client_ip,
+            "local_ip": loc_ip,
+            "device_name": dev_name,
+            "device_id": dev_id,
+            "last_seen": time.time()
+        }
         traffic_watchdog.current_attacker_ip = client_ip
         if dev_id:
             traffic_watchdog.current_attacker_device_id = dev_id
@@ -1307,6 +1349,22 @@ async def configure_smtp(payload: dict):
         smtp_config["user"] = user
         smtp_config["pass"] = password
         smtp_config["provider"] = "smtp"
+        secops_recipient_email = user  # User's connected email automatically becomes recipient!
+        
+        # Persist to MongoDB Atlas
+        if sentinel_db is not None and mongo_connected:
+            try:
+                await sentinel_db["settings"].update_one(
+                    {"_id": "smtp_config"},
+                    {"$set": {
+                        "smtp_config": smtp_config,
+                        "secops_recipient_email": secops_recipient_email,
+                        "updatedAt": datetime.now(timezone.utc)
+                    }},
+                    upsert=True
+                )
+            except Exception as ex:
+                print(f"[MONGO SAVE SETTINGS WARN] {ex}")
         
         await add_log("INFO", f"[SMTP CONFIG] SMTP verified successfully for {user}. Live verification email delivered.")
         return {"success": True, "message": f"SMTP verified! Live test email sent to {user}."}
@@ -1318,6 +1376,31 @@ async def configure_smtp(payload: dict):
                 "error": "Render Cloud Free Tier blocks outbound SMTP Port 587. Please use a free Resend API Key (starts with re_ from resend.com) which delivers instantly over HTTPS Port 443!"
             }
         return {"success": False, "error": f"SMTP Authentication failed: {err_msg}"}
+
+@app.post("/api/security/update-recipient-email")
+async def update_recipient_email(payload: dict):
+    global secops_recipient_email
+    email = str((payload or {}).get("email", "")).strip()
+    if not email or "@" not in email:
+        return {"success": False, "error": "Valid email address required"}
+    secops_recipient_email = email
+    
+    # Persist to MongoDB Atlas settings collection
+    if sentinel_db is not None and mongo_connected:
+        try:
+            await sentinel_db["settings"].update_one(
+                {"_id": "smtp_config"},
+                {"$set": {
+                    "secops_recipient_email": email,
+                    "updatedAt": datetime.now(timezone.utc)
+                }},
+                upsert=True
+            )
+        except Exception as ex:
+            print(f"[MONGO SAVE RECIPIENT WARN] {ex}")
+            
+    await add_log("INFO", f"[SECOPS RECIPIENT] Alert recipient updated to {email}")
+    return {"success": True, "recipient": email}
 
 # Active Cooldown & Auto-Release Background Tasks
 active_cooldown_tasks: Dict[str, asyncio.Task] = {}

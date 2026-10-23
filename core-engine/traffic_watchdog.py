@@ -44,8 +44,9 @@ class TrafficWatchdog:
         resolve_incident_cb: Optional[Callable] = None,
         jail_ip_cb: Optional[Callable] = None,
         release_ip_cb: Optional[Callable] = None,
+        get_active_visitors_cb: Optional[Callable] = None,
         target_url: Optional[str] = None,
-        spike_threshold: float = 6.0,
+        spike_threshold: float = 4.0,
         *args,
         **kwargs
     ):
@@ -55,6 +56,7 @@ class TrafficWatchdog:
         self.resolve_incident_cb = resolve_incident_cb
         self.jail_ip_cb = jail_ip_cb
         self.release_ip_cb = release_ip_cb
+        self.get_active_visitors_cb = get_active_visitors_cb
         self.last_jailed_ip: Optional[str] = None
         self.recently_released: Dict[str, float] = {}
 
@@ -192,11 +194,13 @@ class TrafficWatchdog:
             self.traffic_history[-1]["attacker_device_name"] = device_name
 
         # Also append fresh point so chart registers spike immediately
-        last_platform = self.traffic_history[-1]["platform_rps"] if self.traffic_history else 2.1
+        last_platform = self.traffic_history[-1]["platform_rps"] if self.traffic_history else 0.0
         self.traffic_history.append({
             "time": current_time_str,
             "rps": last_platform,
             "platform_rps": last_platform,
+            "site_traffic": int(last_platform),
+            "active_users": int(last_platform),
             "threat_rps": round(spike_val, 2),
             "attacker_ip": ip,
             "attacker_local_ip": local_ip,
@@ -301,25 +305,11 @@ class TrafficWatchdog:
                         color=3066993
                     )
 
-                # 1. Calculate Real Production Platform RPS (Total Traffic Load)
-                if self.previous_request_count is not None and self.last_check_time is not None:
-                    time_delta = (current_time_obj - self.last_check_time).total_seconds()
-                    req_delta = current_total - self.previous_request_count
-                    if time_delta > 0:
-                        measured_rps = max(0.0, req_delta / time_delta)
-                    else:
-                        measured_rps = 0.0
-                else:
-                    measured_rps = 0.0
-
-                self.previous_request_count = current_total
-                self.last_check_time = current_time_obj
-
-                if measured_rps > 0.0:
-                    platform_rps = round(measured_rps, 2)
-                else:
-                    # True production telemetry: 0.0 req/s when no one is browsing
-                    platform_rps = 0.0
+                # 1. Calculate Real Production Site Traffic (Active Concurrent Visitors on Website)
+                api_active_users = int(data.get("active_users", 0) or 0)
+                direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
+                site_traffic = max(api_active_users, direct_active_visitors)
+                platform_rps = float(site_traffic)
 
                 # 2. Extract Individual Attacker Threat Velocity (From Top Client Tracker)
                 top_client_rps = float(data.get("top_client_rps", 0.0) or 0.0)
@@ -328,14 +318,16 @@ class TrafficWatchdog:
                 else:
                     threat_rps = 0.0  # FLATLINE at 0.0 when normal or idle!
             else:
-                platform_rps = 0.0
+                direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
+                platform_rps = float(direct_active_visitors)
                 threat_rps = 0.0
 
         except Exception as e:
             # Resilient fallback: Endpoint spinning up or sleeping
             latency = 120
             db_status = "CONNECTING"
-            platform_rps = 0.0
+            direct_active_visitors = self.get_active_visitors_cb() if self.get_active_visitors_cb else 0
+            platform_rps = float(direct_active_visitors)
             threat_rps = 0.0
 
         # Check simulation surge override (applies to Threat Velocity Matrix)
@@ -460,11 +452,13 @@ class TrafficWatchdog:
                 )
                 await self.alert(alert_title, alert_body, color=15158332)
 
-        # Append data point with decoupled platform load and threat velocity
+        # Append data point with decoupled site traffic and threat velocity
         data_point = {
             "time": current_time_str,
             "rps": round(platform_rps, 2),
             "platform_rps": round(platform_rps, 2),
+            "site_traffic": int(platform_rps),
+            "active_users": int(platform_rps),
             "threat_rps": round(threat_rps, 2),
             "attacker_ip": self.current_attacker_ip or "None",
             "attacker_local_ip": getattr(self, "current_attacker_local_ip", ""),
