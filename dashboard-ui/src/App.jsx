@@ -844,7 +844,7 @@ export default function App() {
               }}
             >
               <Clock size={13} color="#38bdf8" />
-              <span>IST {currentMumbaiTime}</span>
+              <span>Time: {currentMumbaiTime}</span>
             </div>
 
             {/* MongoDB Atlas Persistence Badge & Modal Trigger */}
@@ -862,58 +862,6 @@ export default function App() {
             >
               <Database size={13} color={mongoConnected ? "#86efac" : "#c4b5fd"} />
               <span>{mongoConnected ? "MongoDB Atlas (30D TTL)" : "MongoDB Atlas"}</span>
-            </button>
-
-            {/* Discord Webhook Button */}
-            <button
-              onClick={() => setShowDiscordModal(true)}
-              className="sso-btn"
-              title="Configure Discord Operations Webhook"
-              style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "0.45rem 0.85rem",
-                borderRadius: 12, fontSize: 12,
-                border: discordConfigured ? "1px solid rgba(34,197,94,0.4)" : "1px solid rgba(99,102,241,0.4)",
-                background: discordConfigured ? "rgba(34,197,94,0.12)" : "rgba(99,102,241,0.12)",
-                color: discordConfigured ? "#86efac" : "#c7d2fe"
-              }}
-            >
-              <BellRing size={13} color={discordConfigured ? "#86efac" : "#a5b4fc"} />
-              <span>{discordConfigured ? "Discord Live" : "Connect Discord"}</span>
-            </button>
-
-            {/* View .sentinel-config.yml Button */}
-            <button
-              onClick={handleOpenConfigModal}
-              className="sso-btn"
-              title="Inspect .sentinel-config.yml CI/CD Policy Gates"
-              style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "0.45rem 0.85rem",
-                borderRadius: 12, fontSize: 12,
-                border: "1px solid rgba(139,92,246,0.35)",
-                background: "rgba(139,92,246,0.1)",
-                color: "#ddd6fe"
-              }}
-            >
-              <FileCode size={13} color="#c4b5fd" />
-              <span>.sentinel-config.yml</span>
-            </button>
-
-            {/* Master Clear System Records Button */}
-            <button
-              onClick={handleClearAllRecords}
-              disabled={isClearingAll}
-              className="sso-btn"
-              title="Purge all quarantined IPs, audit logs, and incidents from memory and MongoDB"
-              style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "0.45rem 0.85rem",
-                borderRadius: 12, fontSize: 12,
-                border: "1px solid rgba(239,68,68,0.35)",
-                background: "rgba(239,68,68,0.1)",
-                color: "#fca5a5"
-              }}
-            >
-              {isClearingAll ? <Loader2 size={13} className="sso-spin" /> : <Trash2 size={13} color="#f87171" />}
-              <span>{isClearingAll ? "Purging..." : "Clear Records"}</span>
             </button>
 
             <WorkspaceSwitcher workspaces={workspaces} activeWorkspace={activeWorkspace} onSelect={setWorkspaceId} />
