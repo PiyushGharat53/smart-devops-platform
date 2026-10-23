@@ -274,7 +274,6 @@ function getSeedTrafficHistory() {
 export default function App() {
   const [workspaces, setWorkspaces] = useState(FALLBACK_WORKSPACES);
   const [workspaceId, setWorkspaceId] = useState(FALLBACK_WORKSPACES[0].id);
-  const [autonomous, setAutonomous] = useState(true);
 
   // Real-Time Mumbai, India (IST) Clock
   const [currentMumbaiTime, setCurrentMumbaiTime] = useState(() =>
@@ -956,21 +955,6 @@ Status: ${inc.status || "Mitigated"}`;
             </button>
 
             <WorkspaceSwitcher workspaces={workspaces} activeWorkspace={activeWorkspace} onSelect={setWorkspaceId} />
-
-            <button
-              onClick={() => setAutonomous((a) => !a)}
-              className="sso-btn"
-              style={{
-                display: "flex", alignItems: "center", gap: 8, padding: "0.45rem 0.95rem",
-                borderRadius: 12, fontSize: 12.5,
-                border: autonomous ? "1px solid rgba(139,92,246,0.45)" : "1px solid rgba(245,158,11,0.4)",
-                background: autonomous ? "rgba(139,92,246,0.15)" : "rgba(245,158,11,0.1)",
-                color: autonomous ? "#ddd6fe" : "#fde68a"
-              }}
-            >
-              {autonomous ? <Unlock size={13} color="#c4b5fd" /> : <Lock size={13} color="#fcd34d" />}
-              <span>{autonomous ? "Autonomous SRE" : "Manual Mode"}</span>
-            </button>
           </div>
         </div>
       </header>

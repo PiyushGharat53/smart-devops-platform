@@ -180,12 +180,7 @@ async def broadcast_telemetry_now():
     if not active_websockets:
         return
     payload = {
-        "metrics": {
-            "cpu_usage": round(psutil.cpu_percent(interval=None) or random.uniform(32, 58), 1),
-            "memory_usage": round(psutil.virtual_memory().percent or random.uniform(50, 68), 1),
-            "disk_usage": round(psutil.disk_usage('/').percent or random.uniform(42, 54), 1),
-            "network_throughput": random.randint(35, 80)
-        },
+        "metrics": traffic_watchdog.get_infrastructure_telemetry(),
         "services": [
             cached_health["gateway"],
             cached_health["mongo"]
@@ -509,6 +504,92 @@ async def send_pipeline_alert_to_outlook(
     """
     success, status_msg = await send_sre_email(subject, html_content, text_content)
     await add_log("INFO" if success else "WARNING", f"[{incident_id}] [OUTLOOK CI/CD DISPATCH] Gate failure incident card sent to {secops_recipient_email}. Status: {status_msg}")
+    return success, status_msg
+
+async def send_pipeline_success_to_outlook(
+    release_id: str,
+    commit_hash: str,
+    author: str,
+    repo_name: str,
+    commit_message: str = "Pre-flight gate validation verified"
+):
+    """Dispatches a formatted SRE Production Release Success card directly to Microsoft Outlook."""
+    subject = f"🚀 [Sentinel CI/CD Success] Production Release Deployed: [{author}] Commit {commit_hash[:7]}"
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; border-radius: 12px; border: 1px solid rgba(34,197,94,0.35);">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+        <h2 style="color: #22c55e; margin: 0; font-size: 18px;">🚀 Sentinel CI/CD Production Release Verified</h2>
+        <span style="background: rgba(34,197,94,0.18); border: 1px solid #22c55e; color: #86efac; font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 9999px;">
+          📫 Microsoft Outlook SRE Release Verification
+        </span>
+      </div>
+      <p style="color: #9ca3af; font-size: 14px;">All 5 automated quality gates in <code>.sentinel-config.yml</code> passed with zero violations. Production deployment successfully dispatched to Render Cloud.</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: rgba(255,255,255,0.03); border-radius: 8px;">
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold; width: 170px;">Release Verification ID:</td>
+          <td style="padding: 10px 16px; color: #38bdf8; font-family: monospace; font-weight: bold;">{release_id}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Pushed By (Engineer):</td>
+          <td style="padding: 10px 16px; color: #facc15; font-weight: bold;">{author}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Git Commit Hash:</td>
+          <td style="padding: 10px 16px; color: #c084fc; font-family: monospace; font-weight: bold;">{commit_hash}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Commit Message:</td>
+          <td style="padding: 10px 16px; color: #e2e8f0; font-style: italic;">{commit_message or "Verified release build"}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Target Repository:</td>
+          <td style="padding: 10px 16px; color: #cbd5e1; font-family: monospace;">{repo_name}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Pre-Flight Quality Gates:</td>
+          <td style="padding: 10px 16px; color: #4ade80; font-weight: bold;">All 5/5 Passed (100% Green)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Verification Checklist:</td>
+          <td style="padding: 10px 16px; color: #94a3b8; font-size: 13px;">
+            ✔ Gate 1: Dependency Tree Resolution (npm install)<br>
+            ✔ Gate 2: Security Vulnerability Scan (npm audit)<br>
+            ✔ Gate 3: Syntax Verification &amp; AST Check (node --check)<br>
+            ✔ Gate 4: Code Quality &amp; Standards Linting (eslint)<br>
+            ✔ Gate 5: Secret Vault Shield &amp; Credential Detection
+          </td>
+        </tr>
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Deployment Target:</td>
+          <td style="padding: 10px 16px; color: #34d399; font-weight: bold;">LIVE IN PRODUCTION (Render Cloud)</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 16px; color: #9ca3af; font-weight: bold;">Timestamp (IST):</td>
+          <td style="padding: 10px 16px; color: #38bdf8;">{get_ist_time_str()} (Mumbai, India)</td>
+        </tr>
+      </table>
+      
+      <div style="padding: 12px; background: rgba(34, 197, 94, 0.1); border-left: 4px solid #22c55e; border-radius: 4px; margin-bottom: 20px;">
+        <strong style="color: #86efac;">DevOps Promotion:</strong> All pre-flight safety gates verified. Production containers upgraded with zero downtime.
+      </div>
+      
+      <p style="font-size: 12px; color: #6b7280; margin-top: 24px;">Sentinel SmartOps Autonomous CI/CD Gatekeeper • Microsoft Outlook Enterprise Notification</p>
+    </div>
+    """
+    text_content = f"""
+    [Sentinel CI/CD Success] Production Release Deployed
+    Release ID: {release_id}
+    Engineer: {author}
+    Commit: {commit_hash}
+    Message: {commit_message}
+    Repo: {repo_name}
+    Status: ALL 5/5 GATES PASSED (100% Green)
+    Environment: Render Cloud (Production Live)
+    Time: {get_ist_time_str()} IST
+    """
+    success, status_msg = await send_sre_email(subject, html_content, text_content)
+    await add_log("INFO" if success else "WARNING", f"[{release_id}] [OUTLOOK CI/CD RELEASE DISPATCH] Success release card sent to {secops_recipient_email}. Status: {status_msg}")
     return success, status_msg
 
 async def add_log(level: str, msg: str):
@@ -1046,6 +1127,24 @@ async def run_real_deployment_pipeline(
     deployment_state["stage"] = "Deployment executed successfully!"
     deployment_state["status"] = "success"
     await add_log("REMEDIATED", f"Release {commit_hash} authorized and live in production.")
+
+    release_id = f"REL-{random.randint(1000, 9999)}"
+    try:
+        await send_pipeline_success_to_outlook(
+            release_id=release_id,
+            commit_hash=commit_hash,
+            author=author,
+            repo_name=repo_name,
+            commit_message=message
+        )
+    except Exception as e:
+        await add_log("WARN", f"[{release_id}] Outlook release card dispatch warning: {e}")
+
+    await send_dispatch_alert(
+        "Production Release Live",
+        f"🚀 Release **{release_id}** for **{repo_name}** (`{commit_hash[:7]}`) passed all 5 gates and is live in production.",
+        color=3066993
+    )
 
     await asyncio.sleep(6)
     deployment_state = {
@@ -2486,12 +2585,7 @@ async def websocket_telemetry(websocket: WebSocket):
     try:
         while True:
             payload = {
-                "metrics": {
-                    "cpu_usage": round(psutil.cpu_percent(interval=None) or random.uniform(32, 58), 1),
-                    "memory_usage": round(psutil.virtual_memory().percent or random.uniform(50, 68), 1),
-                    "disk_usage": round(psutil.disk_usage('/').percent or random.uniform(42, 54), 1),
-                    "network_throughput": random.randint(35, 80)
-                },
+                "metrics": traffic_watchdog.get_infrastructure_telemetry(),
                 "services": [
                     cached_health["gateway"],
                     cached_health["mongo"]
