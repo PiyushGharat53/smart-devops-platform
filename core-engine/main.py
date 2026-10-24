@@ -30,7 +30,12 @@ MONGO_URI = (
     os.getenv("MONGODB_URI") or 
     ""
 )
-FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
+RAW_FINSIGHT_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
+if RAW_FINSIGHT_URL.endswith("/metrics"):
+    RAW_FINSIGHT_URL = RAW_FINSIGHT_URL[:-8].rstrip("/")
+if RAW_FINSIGHT_URL.endswith("/health"):
+    RAW_FINSIGHT_URL = RAW_FINSIGHT_URL[:-7].rstrip("/")
+FINSIGHT_API_URL = RAW_FINSIGHT_URL
 RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
 FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
 RENDER_API_KEY = os.getenv("RENDER_API_KEY", "")
@@ -927,11 +932,13 @@ async def health_check_daemon():
                     latency = int((time.time() - start_time) * 1000)
                     if response.status_code == 200:
                         consecutive_probe_failures = 0
-                        data = response.json()
-                        cached_health["gateway"]["status"] = data.get("status", "healthy")
+                        data = response.json() if hasattr(response, "json") else {}
+                        raw_gw = str(data.get("status", "healthy")).lower()
+                        cached_health["gateway"]["status"] = "healthy" if raw_gw in ("healthy", "up", "connected", "ok", "200") else "degraded"
                         cached_health["gateway"]["latency"] = max(latency, 20)
                         if "mongo" not in healing_in_progress:
-                            cached_health["mongo"]["status"] = data.get("database", {}).get("status", "healthy")
+                            raw_db = str(data.get("database", {}).get("status", "healthy")).lower()
+                            cached_health["mongo"]["status"] = "healthy" if raw_db in ("healthy", "connected", "up", "ok", "ready") else "degraded"
                             cached_health["mongo"]["latency"] = max(int(latency * 0.6), 15)
 
                         # Auto-resolve any active outage incidents once container is operational
@@ -947,6 +954,7 @@ async def health_check_daemon():
                                         ))
                                     except Exception:
                                         pass
+                        await broadcast_telemetry_now()
                     else:
                         consecutive_probe_failures += 1
                         # If HTTP 502/503/504 (Service Suspended/Bad Gateway) or 404
@@ -1061,7 +1069,9 @@ async def autonomous_heal(service_id: str, service_name: str):
     if service_id in cached_health:
         cached_health[service_id]["status"] = "healing"
     if service_id == "gateway" and "mongo" in cached_health:
-        cached_health["mongo"]["status"] = "healthy"
+        cached_health["mongo"]["status"] = "healing"
+    if service_id == "mongo" and "gateway" in cached_health:
+        cached_health["gateway"]["status"] = "healing"
     await broadcast_telemetry_now()
 
     incident_id = f"INC-{random.randint(1000, 9999)}"
@@ -1091,7 +1101,7 @@ async def autonomous_heal(service_id: str, service_name: str):
     }
     create_incident_callback(incident_doc)
 
-    if "gateway" in service_id.lower():
+    if "gateway" in service_id.lower() or "mongo" in service_id.lower():
         rebooted_via_api = False
         if RENDER_API_KEY:
             try:
@@ -1148,12 +1158,10 @@ async def autonomous_heal(service_id: str, service_name: str):
         except Exception:
             pass
 
-    if service_id in cached_health:
-        cached_health[service_id]["status"] = "healthy"
-        cached_health[service_id]["latency"] = random.randint(35, 60)
-    if service_id == "gateway" and "mongo" in cached_health:
-        cached_health["mongo"]["status"] = "healthy"
-        cached_health["mongo"]["latency"] = random.randint(20, 35)
+    cached_health["gateway"]["status"] = "healthy"
+    cached_health["gateway"]["latency"] = random.randint(35, 60)
+    cached_health["mongo"]["status"] = "healthy"
+    cached_health["mongo"]["latency"] = random.randint(20, 35)
 
     await broadcast_telemetry_now()
 
@@ -1165,9 +1173,9 @@ async def autonomous_heal(service_id: str, service_name: str):
     )
 
     resolve_incident_callback(incident_id, "Container auto-remediation successfully completed.")
-    # Also resolve any lingering active incidents for this service
+    # Also resolve any lingering active incidents for gateway and mongo
     for inc in live_incidents:
-        if inc.get("service_id") == service_id and inc.get("status") != "Resolved":
+        if inc.get("service_id") in ("gateway", "mongo") and inc.get("status") != "Resolved":
             inc["status"] = "Resolved"
             inc["remediation"] = "Container auto-remediation successfully completed."
             if db_client and mongo_connected and incidents_collection is not None:
@@ -1180,6 +1188,8 @@ async def autonomous_heal(service_id: str, service_name: str):
                     pass
 
     healing_in_progress.discard(service_id)
+    healing_in_progress.discard("gateway")
+    healing_in_progress.discard("mongo")
     await broadcast_telemetry_now()
 
 # ==========================================

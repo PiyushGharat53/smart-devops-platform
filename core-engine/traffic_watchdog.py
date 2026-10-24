@@ -532,7 +532,7 @@ class TrafficWatchdog:
                 s["latency"] = latency
                 s["status"] = "healthy" if latency < 500 else "degraded"
             elif s["id"] == "mongo":
-                s["status"] = "healthy" if db_status == "CONNECTED" else "degraded"
+                s["status"] = "healthy" if str(db_status).upper() in ("CONNECTED", "HEALTHY", "UP", "OK") else "degraded"
 
     def calculate_real_telemetry(self, platform_rps: float, threat_rps: float, latency: int, rss_mb: float) -> dict:
         """
