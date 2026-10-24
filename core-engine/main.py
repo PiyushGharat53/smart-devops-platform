@@ -959,21 +959,35 @@ async def health_check_daemon():
                                         pass
                         await broadcast_telemetry_now()
                     else:
-                        consecutive_probe_failures = 0
+                        consecutive_probe_failures += 1
+                        if (response.status_code >= 500 or response.status_code == 404) and consecutive_probe_failures >= 3:
+                            cached_health["gateway"]["status"] = "failed"
+                            cached_health["gateway"]["latency"] = 0
+                            if "mongo" not in healing_in_progress:
+                                cached_health["mongo"]["status"] = "failed"
+                                cached_health["mongo"]["latency"] = 0
+                            await broadcast_telemetry_now()
+                        else:
+                            cached_health["gateway"]["status"] = "healthy"
+                            cached_health["gateway"]["latency"] = max(latency, 25)
+                            if "mongo" not in healing_in_progress:
+                                cached_health["mongo"]["status"] = "healthy"
+                                cached_health["mongo"]["latency"] = max(int(latency * 0.6), 18)
+                except Exception as ex:
+                    consecutive_probe_failures += 1
+                    if consecutive_probe_failures >= 3:
+                        cached_health["gateway"]["status"] = "failed"
+                        cached_health["gateway"]["latency"] = 0
+                        if "mongo" not in healing_in_progress:
+                            cached_health["mongo"]["status"] = "failed"
+                            cached_health["mongo"]["latency"] = 0
+                        await broadcast_telemetry_now()
+                    else:
                         cached_health["gateway"]["status"] = "healthy"
-                        cached_health["gateway"]["latency"] = max(latency, 25)
+                        cached_health["gateway"]["latency"] = random.randint(35, 48)
                         if "mongo" not in healing_in_progress:
                             cached_health["mongo"]["status"] = "healthy"
-                            cached_health["mongo"]["latency"] = max(int(latency * 0.6), 18)
-                        await broadcast_telemetry_now()
-                except Exception as ex:
-                    consecutive_probe_failures = 0
-                    cached_health["gateway"]["status"] = "healthy"
-                    cached_health["gateway"]["latency"] = random.randint(35, 48)
-                    if "mongo" not in healing_in_progress:
-                        cached_health["mongo"]["status"] = "healthy"
-                        cached_health["mongo"]["latency"] = random.randint(18, 28)
-                    await broadcast_telemetry_now()
+                            cached_health["mongo"]["latency"] = random.randint(18, 28)
             
             cached_health["last_checked"] = time.time()
             await asyncio.sleep(4)

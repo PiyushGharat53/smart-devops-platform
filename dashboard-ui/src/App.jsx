@@ -446,9 +446,15 @@ export default function App() {
               net: data.metrics.network_throughput || 0,
             });
           }
-          if (Array.isArray(data.services)) setServices(data.services.map(s => ({ ...s, status: "healthy", latency: s.latency > 0 ? s.latency : (s.id === "gateway" ? 42 : 25) })));
+          if (Array.isArray(data.services)) {
+            setServices(data.services.map(s => ({
+              ...s,
+              status: isHealthyStatus(s.status) ? "healthy" : s.status,
+              latency: s.latency > 0 ? s.latency : (s.id === "gateway" ? 42 : 25)
+            })));
+          }
           if (Array.isArray(data.logs)) setLogs(data.logs.filter(l => !String(l.msg || '').toLowerCase().includes('discord')));
-          if (Array.isArray(data.incidents)) setIncidents(data.incidents.filter(i => !String(i.id || '').startsWith('INC-PROBE') && !String(i.id || '').startsWith('INC-CRASH')));
+          if (Array.isArray(data.incidents)) setIncidents(data.incidents);
           if (data.deployment) setDeployment(data.deployment);
           
           if (Array.isArray(data.traffic_history)) setTrafficHistory(data.traffic_history);
@@ -955,9 +961,9 @@ Status: ${inc.status || "Mitigated"}`;
     }
   };
 
-  const healthyCount = visibleServices.length;
-  const healthRate = "100.0";
-  const activeIncidentCount = incidents.filter((i) => i.status !== "Resolved" && !String(i.id || '').startsWith('INC-PROBE') && !String(i.id || '').startsWith('INC-CRASH')).length;
+  const healthyCount = visibleServices.filter((s) => isHealthyStatus(s.status)).length;
+  const healthRate = visibleServices.length > 0 ? ((healthyCount / visibleServices.length) * 100).toFixed(1) : "100.0";
+  const activeIncidentCount = incidents.filter((i) => i.status !== "Resolved").length;
   const isPipelineActive = deployment.status !== "idle";
 
   return (
@@ -1106,7 +1112,10 @@ Status: ${inc.status || "Mitigated"}`;
                 <Server size={16} color="#a5b4fc" /> Monitored Services <span style={{ color: "#64748b", fontWeight: 400 }}>· {activeWorkspace?.label}</span>
               </h2>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div
+                <button
+                  onClick={() => setShowRenderModal(true)}
+                  className="sso-btn"
+                  title="Configure Render Cloud API Key for autonomous unsuspend & reboot"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -1115,14 +1124,39 @@ Status: ${inc.status || "Mitigated"}`;
                     borderRadius: 8,
                     fontSize: 11.5,
                     fontWeight: 600,
-                    background: "rgba(34, 197, 94, 0.12)",
-                    color: "#86efac",
-                    border: "1px solid rgba(34, 197, 94, 0.35)",
+                    background: renderConfigured ? "rgba(34, 197, 94, 0.12)" : "rgba(99, 102, 241, 0.12)",
+                    color: renderConfigured ? "#86efac" : "#c7d2fe",
+                    border: renderConfigured ? "1px solid rgba(34, 197, 94, 0.35)" : "1px solid rgba(99, 102, 241, 0.35)",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease"
                   }}
                 >
-                  <Cloud size={12} color="#22c55e" />
-                  Render API: Connected
-                </div>
+                  <Cloud size={12} color={renderConfigured ? "#22c55e" : "#818cf8"} />
+                  {renderConfigured ? "Render API: Connected" : "☁️ Render API"}
+                </button>
+                <button
+                  id="chaos-fail-container-btn"
+                  onClick={() => handleSimulateContainerFailure("gateway")}
+                  disabled={isSimulatingFailure}
+                  title="Chaos Engineering: Simulate FinSight container crash to demonstrate Autonomous Self-Healing"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0.32rem 0.75rem",
+                    borderRadius: 8,
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    background: isSimulatingFailure ? "rgba(239, 68, 68, 0.28)" : "rgba(239, 68, 68, 0.12)",
+                    color: "#fca5a5",
+                    border: "1px solid rgba(239, 68, 68, 0.35)",
+                    cursor: isSimulatingFailure ? "not-allowed" : "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                >
+                  <Flame size={12} color="#f87171" />
+                  {isSimulatingFailure ? "Crashing Container..." : "💥 Simulate Container Outage"}
+                </button>
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1131,23 +1165,56 @@ Status: ${inc.status || "Mitigated"}`;
               )}
               {visibleServices.map((svc) => {
                 const Icon = SERVICE_ICONS[svc.id] || Server;
+                const isHealthy = isHealthyStatus(svc.status);
+                const isHealing = svc.status === "healing";
+                const meta = STATUS_META[svc.status] || (isHealthy ? STATUS_META.healthy : STATUS_META.failed);
                 return (
                   <motion.div layout key={svc.id} className="sso-service-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: 16, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.02)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <div style={{ padding: 8, borderRadius: 8, backgroundColor: "rgba(34,197,94,0.12)", color: "#22c55e", display: "flex" }}><Icon size={16} /></div>
+                      <div style={{ padding: 8, borderRadius: 8, backgroundColor: `${meta.color}1a`, color: meta.color, display: "flex" }}><Icon size={16} /></div>
                       <div>
                         <p style={{ fontSize: 14, color: "#e2e8f0", margin: 0, fontWeight: 500 }}>{svc.name}</p>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                          <StatusDot status="healthy" />
-                          <span style={{ fontSize: 11.5, color: "#22c55e", fontWeight: 600 }}>Healthy</span>
-                          <span style={{ fontSize: 11.5, color: "#64748b" }}>· {svc.latency > 0 ? `${svc.latency}ms latency` : (svc.id === "gateway" ? "42ms latency" : "25ms latency")}</span>
+                          <StatusDot status={svc.status} />
+                          <span style={{ fontSize: 11.5, color: meta.color, fontWeight: 600 }}>{meta.label}</span>
+                          {!isHealing && <span style={{ fontSize: 11.5, color: "#64748b" }}>· {svc.latency > 0 ? `${svc.latency}ms latency` : "probing"}</span>}
                         </div>
                       </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#34d399", fontWeight: 600, backgroundColor: "rgba(34,197,94,0.1)", padding: "0.35rem 0.75rem", borderRadius: 8, border: "1px solid rgba(34,197,94,0.25)" }}>
-                      <CheckCircle2 size={15} color="#34d399" />
-                      <span>Operational</span>
-                    </div>
+                    {(!isHealthy && !isHealing) && (
+                      <button 
+                        onClick={() => healService(svc.id)} 
+                        className="sso-btn sso-heal-btn" 
+                        title="Trigger autonomous container recreation hook on Render Cloud"
+                        style={{ 
+                          display: "flex", 
+                          alignItems: "center", 
+                          gap: 6, 
+                          padding: "0.42rem 0.85rem", 
+                          borderRadius: 8, 
+                          fontSize: 12, 
+                          fontWeight: 600, 
+                          backgroundColor: "rgba(139,92,246,0.25)", 
+                          color: "#e0e7ff", 
+                          border: "1px solid rgba(139,92,246,0.6)",
+                          boxShadow: "0 0 12px rgba(139,92,246,0.35)",
+                          cursor: "pointer"
+                        }}
+                      >
+                        <Zap size={13} color="#c4b5fd" fill="#c4b5fd" /> Reboot &amp; Auto-Heal
+                      </button>
+                    )}
+                    {isHealing && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#c4b5fd" }}>
+                        <Loader2 size={13} className="sso-spin" /> Healing…
+                      </div>
+                    )}
+                    {isHealthy && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#34d399", fontWeight: 600, backgroundColor: "rgba(34,197,94,0.1)", padding: "0.35rem 0.75rem", borderRadius: 8, border: "1px solid rgba(34,197,94,0.25)" }}>
+                        <CheckCircle2 size={15} color="#34d399" />
+                        <span>Operational</span>
+                      </div>
+                    )}
                   </motion.div>
                 );
               })}
