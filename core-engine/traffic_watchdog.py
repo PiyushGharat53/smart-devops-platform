@@ -235,6 +235,20 @@ class TrafficWatchdog:
         target_ip = client_ip or "192.168.1.128"
         self.current_attacker_ip = target_ip
         self.pending_spike_ip = target_ip
+        if not self.current_incident_id:
+            self.current_incident_id = f"INC-{random.randint(1000, 9999)}"
+        self.create_incident({
+            "id": self.current_incident_id,
+            "service": "FinSight API Gateway",
+            "service_id": "gateway",
+            "title": "Rogue Attacker Velocity Spike",
+            "status": "Mitigating (Active Defense Engaged)",
+            "time": get_ist_time_str(),
+            "severity": "CRITICAL",
+            "confidence": 99,
+            "rootCause": f"High-velocity traffic surge ({rps:.1f} req/s) from {target_ip} exceeded safe threshold ({self.spike_threshold} req/s).",
+            "remediation": "Active defense shield engaged. Volumetric surge throttled with automated self-healing cooldown."
+        })
         self.record_threat_spike(
             threat_rps=rps,
             ip=target_ip,

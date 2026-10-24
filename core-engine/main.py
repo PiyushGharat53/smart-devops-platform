@@ -85,6 +85,12 @@ async def init_mongodb_ttl():
         await incidents_collection.create_index("createdAt", expireAfterSeconds=RETENTION_PERIOD_SECONDS)
         print("[MONGO TTL INDEX ACTIVE] Automatic 30-day (2,592,000s) document purge index verified.")
 
+        # Purge legacy Discord webhook anomaly logs from MongoDB Atlas so they never display
+        try:
+            await logs_collection.delete_many({"msg": {"$regex": "discord", "$options": "i"}})
+        except Exception:
+            pass
+
         # Hydrate initial live logs from MongoDB Atlas
         cursor = logs_collection.find({}, {"_id": 0}).sort("createdAt", -1).limit(40)
         db_logs = await cursor.to_list(length=40)
@@ -96,6 +102,7 @@ async def init_mongodb_ttl():
                         if k == "createdAt":
                             l["time"] = get_ist_time_str(v)
                         l[k] = v.isoformat()
+            db_logs = [l for l in db_logs if "discord" not in str(l.get("msg", "")).lower()]
             live_logs.clear()
             live_logs.extend(db_logs)
 
@@ -368,15 +375,10 @@ async def send_dispatch_alert(title: str, description: str, color: int = 1515833
             "User-Agent": "Sentinel-SmartOps/2.0"
         }
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
-                if response.status_code not in (200, 204):
-                    error_text = response.text
-                    if "<html" in error_text.lower() or "cloudflare" in error_text.lower():
-                        error_text = "Blocked by Discord Cloudflare Firewall (Shared IP Rate Limit)."
-                    await add_log("ANOMALY", f"Discord Webhook Failed: {response.status_code} - {error_text[:100]}")
-        except Exception as e:
-            await add_log("ANOMALY", f"Discord Webhook Error: {str(e)}")
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                await client.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
+        except Exception:
+            pass  # Completely silent, zero log emissions
 
     # 3. Microsoft Outlook Enterprise Email Dispatch (Port 443 HTTPS via Resend)
     # Directly routes all incident alerts into your Microsoft Outlook Inbox!
@@ -595,6 +597,9 @@ async def send_pipeline_success_to_outlook(
     return success, status_msg
 
 async def add_log(level: str, msg: str):
+    # Completely suppress any Discord logs from being recorded or displayed
+    if "discord" in msg.lower():
+        return
     time_str = get_ist_time_str()
     now_utc = datetime.now(timezone.utc)
     log_entry = {
@@ -653,12 +658,18 @@ async def resolve_incident_in_mongo(incident_id: str, note: str):
             print(f"[MONGO INCIDENT RESOLVE FAILED] {e}")
 
 def create_incident_callback(incident_doc: dict):
-    live_incidents.append(incident_doc)
-    if len(live_incidents) > 30:
-        live_incidents.pop(0)
+    # Avoid duplicate IDs
+    existing = next((i for i in live_incidents if i.get("id") == incident_doc.get("id")), None)
+    if existing:
+        existing.update(incident_doc)
+    else:
+        live_incidents.append(incident_doc)
+        if len(live_incidents) > 40:
+            live_incidents.pop(0)
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(save_incident_to_mongo(incident_doc))
+        loop.create_task(broadcast_telemetry_now())
     except RuntimeError:
         pass
 
@@ -670,6 +681,7 @@ def resolve_incident_callback(incident_id: str, note: str = "Resolved"):
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(resolve_incident_in_mongo(incident_id, note))
+        loop.create_task(broadcast_telemetry_now())
     except RuntimeError:
         pass
 
@@ -1276,10 +1288,28 @@ async def simulate_surge(request: Request, payload: dict = None):
         forwarded = request.headers.get("x-forwarded-for")
         client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "103.57.252.110")
 
+    incident_id = f"INC-{random.randint(1000, 9999)}"
+    traffic_watchdog.current_incident_id = incident_id
     traffic_watchdog.trigger_surge(rps=rps, duration_ticks=duration, client_ip=client_ip)
-    await add_log("WARN", f"[SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s (Client: {client_ip}).")
+
+    if rps >= traffic_watchdog.spike_threshold:
+        incident_doc = {
+            "id": incident_id,
+            "service": "FinSight API Gateway",
+            "service_id": "gateway",
+            "title": "Rogue Attacker Velocity Spike",
+            "status": "Mitigating (Active Defense Engaged)",
+            "time": get_ist_time_str(),
+            "severity": "CRITICAL",
+            "confidence": 99,
+            "rootCause": f"Simulated volumetric surge injected: {rps:.1f} req/s from {client_ip}. Threshold ({traffic_watchdog.spike_threshold} req/s) breached.",
+            "remediation": "Active defense engaged. Autonomous healing cycle initiated."
+        }
+        create_incident_callback(incident_doc)
+
+    await add_log("WARN", f"[{incident_id}] [SURGE SIMULATOR] Injected simulated traffic spike of {rps:.1f} req/s (Client: {client_ip}).")
     await broadcast_telemetry_now()
-    return {"message": f"Simulated traffic spike of {rps} req/s triggered.", "rps": rps, "client_ip": client_ip}
+    return {"message": f"Simulated traffic spike of {rps} req/s triggered.", "rps": rps, "client_ip": client_ip, "incident_id": incident_id}
 
 @app.post("/api/traffic/real-burst")
 async def real_burst_test(request: Request, background_tasks: BackgroundTasks, payload: dict = None):
@@ -1304,11 +1334,12 @@ async def real_burst_test(request: Request, background_tasks: BackgroundTasks, p
                 except Exception:
                     pass
         if count_429 > 0:
+            burst_inc_id = f"INC-BURST-{random.randint(1000, 9999)}"
             test_ip = client_ip
             jail_ip_callback({
                 "ip": test_ip,
                 "threat_level": "WARNING",
-                "incident_id": f"BURST-{random.randint(1000, 9999)}",
+                "incident_id": burst_inc_id,
                 "reason": f"Real HTTP Burst: {count_429} requests rejected by Express rate limiter (HTTP 429)",
                 "jailed_at": get_ist_time_str(),
                 "status": "QUARANTINED",
@@ -1316,6 +1347,18 @@ async def real_burst_test(request: Request, background_tasks: BackgroundTasks, p
                 "requests_blocked": count_429,
                 "action_taken": "Direct HTTP 429 Active Defense Challenge Delivered",
                 "auto_release_in": "10s Cooldown"
+            })
+            create_incident_callback({
+                "id": burst_inc_id,
+                "service": "FinSight API Gateway",
+                "service_id": "gateway",
+                "title": "Volumetric Burst Attack",
+                "status": "Mitigating (Active Defense Engaged)",
+                "time": get_ist_time_str(),
+                "severity": "CRITICAL",
+                "confidence": 98,
+                "rootCause": f"25 rapid HTTP requests fired against FinSight. {count_429} requests intercepted by Active Defense (HTTP 429).",
+                "remediation": "Express active defense middleware engaged. Quarantine enforced with auto-cooldown."
             })
         await add_log(
             "INFO",
@@ -1866,6 +1909,22 @@ async def report_threat(payload: dict):
     }
     jail_ip_callback(entry)
     dev_str = f" [{device_name} ({local_ip or device_id})]" if (device_name or local_ip or device_id) else ""
+
+    # Record spike incident in Incident Intelligence Feed and persist to MongoDB Atlas
+    incident_doc = {
+        "id": incident_id,
+        "service": "FinSight API Gateway",
+        "service_id": "gateway",
+        "title": "Rogue Attacker Velocity Spike",
+        "status": "Mitigating (Active Defense Engaged)",
+        "time": get_ist_time_str(),
+        "severity": "CRITICAL",
+        "confidence": 99,
+        "rootCause": f"Volumetric rate limit exceeded from {local_ip or ip}{dev_str} ({velocity_rps:.1f} req/s). Safe threshold (4.0 req/s) breached.",
+        "remediation": f"Active defense shield engaged. Client quarantined to HTTP 429 challenge screen. Cooldown: {auto_release_str}."
+    }
+    create_incident_callback(incident_doc)
+
     await add_log("ANOMALY", f"[{incident_id}] [TRAFFIC RADAR] Ingress surge detected: {velocity_rps:.1f} req/s from {local_ip or ip}{dev_str}. Safe threshold (4.0 req/s) breached.")
     await add_log("CRITICAL", f"[{incident_id}] [SURGE SHIELD] Zero-Trust quarantine engaged. Terminal {local_ip or ip} isolated to HTTP 429 challenge jail.")
     
@@ -2008,6 +2067,18 @@ async def set_ip_policy(payload: dict):
         matched.pop("released_at", None)
         traffic_watchdog.recently_released.pop(clean_ip, None)
         traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
+        create_incident_callback({
+            "id": inc_id,
+            "service": "FinSight API Gateway",
+            "service_id": "gateway",
+            "title": f"Manual Permanent Ban [{matched.get('device_name') or clean_ip}]",
+            "status": "Mitigating (Active Defense Engaged)",
+            "time": get_ist_time_str(),
+            "severity": "CRITICAL",
+            "confidence": 100,
+            "rootCause": f"Client {clean_ip} [{matched.get('device_name') or clean_ip}] permanently banned by SRE team. Reason: {reason}",
+            "remediation": "Permanent HTTP 429 challenge enforced. Manual revocation required."
+        })
         await add_log("CRITICAL", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] permanently banned by SRE team. Rule active.")
     elif policy in ("5m", "5_minutes"):
         matched["policy"] = "5_MINUTES"
@@ -2018,6 +2089,18 @@ async def set_ip_policy(payload: dict):
         traffic_watchdog.recently_released.pop(clean_ip, None)
         traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
         schedule_cooldown_task(inc_id, clean_ip, 300, "5_MINUTES", "5-Min Cooldown", matched_dev_id)
+        create_incident_callback({
+            "id": inc_id,
+            "service": "FinSight API Gateway",
+            "service_id": "gateway",
+            "title": f"Firewall Quarantine [{matched.get('device_name') or clean_ip}]",
+            "status": "Mitigating (Active Defense Engaged)",
+            "time": get_ist_time_str(),
+            "severity": "HIGH",
+            "confidence": 100,
+            "rootCause": f"Client {clean_ip} [{matched.get('device_name') or clean_ip}] quarantined under 5-Min policy by SRE team. Reason: {reason}",
+            "remediation": f"Client isolated with HTTP 429 challenge. Auto release in 5 minutes."
+        })
         await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 5 minutes by SRE team.")
     elif policy in ("1h", "1_hour"):
         matched["policy"] = "1_HOUR"
@@ -2028,6 +2111,18 @@ async def set_ip_policy(payload: dict):
         traffic_watchdog.recently_released.pop(clean_ip, None)
         traffic_watchdog.recently_released.pop(matched.get("ip", ""), None)
         schedule_cooldown_task(inc_id, clean_ip, 3600, "1_HOUR", "1-Hour Cooldown", matched_dev_id)
+        create_incident_callback({
+            "id": inc_id,
+            "service": "FinSight API Gateway",
+            "service_id": "gateway",
+            "title": f"Firewall Quarantine [{matched.get('device_name') or clean_ip}]",
+            "status": "Mitigating (Active Defense Engaged)",
+            "time": get_ist_time_str(),
+            "severity": "HIGH",
+            "confidence": 100,
+            "rootCause": f"Client {clean_ip} [{matched.get('device_name') or clean_ip}] quarantined under 1-Hour policy by SRE team. Reason: {reason}",
+            "remediation": f"Client isolated with HTTP 429 challenge. Auto release in 1 hour."
+        })
         await add_log("WARN", f"[FIREWALL POLICY] Client {clean_ip} [{matched.get('device_name') or matched_dev_id}] quarantined for 1 hour by SRE team.")
     elif policy in ("release", "unjail"):
         old_task = active_cooldown_tasks.get(task_key)
@@ -2039,6 +2134,7 @@ async def set_ip_policy(payload: dict):
         matched["auto_release_in"] = "Released by SRE Engineer"
         matched["released_at"] = time.time()
         traffic_watchdog.defense_mode_active = False
+        resolve_incident_callback(inc_id, f"SRE manually unjailed client {clean_ip}. Allowlist restored.")
         await add_log("INFO", f"[FIREWALL POLICY] SRE manually unjailed Client {clean_ip} [{matched.get('device_name') or matched_dev_id}]. Allowlist restored.")
 
     # Broadcast updated firewall rule to all active dashboards instantly

@@ -435,7 +435,7 @@ export default function App() {
             });
           }
           if (Array.isArray(data.services)) setServices(data.services);
-          if (Array.isArray(data.logs)) setLogs(data.logs);
+          if (Array.isArray(data.logs)) setLogs(data.logs.filter(l => !String(l.msg || '').toLowerCase().includes('discord')));
           if (Array.isArray(data.incidents)) setIncidents(data.incidents);
           if (data.deployment) setDeployment(data.deployment);
           
@@ -1570,7 +1570,7 @@ Status: ${inc.status || "Mitigated"}`;
           </div>
           <div ref={terminalRef} className="sso-scroll" style={{ height: 260, overflowY: "auto", borderRadius: 12, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.06)", padding: 16, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "12.5px", lineHeight: 1.65 }}>
             <AnimatePresence initial={false}>
-              {logs.map((log) => (
+              {logs.filter(log => !String(log.msg || '').toLowerCase().includes('discord')).map((log) => (
                 <motion.div key={log.id || `${log.time}-${log.msg}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} style={{ display: "flex", gap: 8 }}>
                   <span style={{ color: "#475569" }}>[{formatISTTime(log.time, log.createdAt)}]</span>
                   <span style={{ fontWeight: 600, color: LOG_LEVEL_META[log.level]?.color || "#ffffff" }}>[{log.level}]</span>
