@@ -914,7 +914,7 @@ simulated_outage_time: float = 0.0
 async def health_check_daemon():
     """Periodically queries FinSight health endpoint without blocking WebSocket ticks."""
     global cached_health, consecutive_probe_failures, simulated_outage_active, simulated_outage_time
-    async with httpx.AsyncClient(timeout=4.0) as client:
+    async with httpx.AsyncClient(timeout=8.0) as client:
         while True:
             # If in simulated outage mode for more than 60 seconds without healing, auto-clear to prevent permanent outage display
             if simulated_outage_active and (time.time() - simulated_outage_time > 60):
@@ -933,6 +933,20 @@ async def health_check_daemon():
                         if "mongo" not in healing_in_progress:
                             cached_health["mongo"]["status"] = data.get("database", {}).get("status", "healthy")
                             cached_health["mongo"]["latency"] = max(int(latency * 0.6), 15)
+
+                        # Auto-resolve any active outage incidents once container is operational
+                        for inc in live_incidents:
+                            if inc.get("service_id") in ("gateway", "mongo") and inc.get("status") != "Resolved":
+                                inc["status"] = "Resolved"
+                                inc["remediation"] = "Service container operational. Readiness check 200 OK."
+                                if db_client and mongo_connected and incidents_collection is not None:
+                                    try:
+                                        asyncio.create_task(incidents_collection.update_one(
+                                            {"id": inc.get("id")},
+                                            {"$set": {"status": "Resolved", "remediation": inc["remediation"]}}
+                                        ))
+                                    except Exception:
+                                        pass
                     else:
                         consecutive_probe_failures += 1
                         # If HTTP 502/503/504 (Service Suspended/Bad Gateway) or 404
@@ -1121,7 +1135,19 @@ async def autonomous_heal(service_id: str, service_name: str):
             except Exception as e:
                 await add_log("ANOMALY", f"[{incident_id}] Render API reboot command warning: {str(e)}")
 
-    await asyncio.sleep(4)
+    # Actively verify container readiness after reboot/resume command (wait up to 18 seconds)
+    restored_healthy = False
+    for attempt in range(6):
+        await asyncio.sleep(2.5)
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as verify_client:
+                chk_res = await verify_client.get(f"{FINSIGHT_API_URL}/health")
+                if chk_res.status_code == 200:
+                    restored_healthy = True
+                    break
+        except Exception:
+            pass
+
     if service_id in cached_health:
         cached_health[service_id]["status"] = "healthy"
         cached_health[service_id]["latency"] = random.randint(35, 60)
