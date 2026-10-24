@@ -33,6 +33,7 @@ MONGO_URI = (
 FINSIGHT_API_URL = os.getenv("FINSIGHT_API_URL", "https://finsight-erku.onrender.com").rstrip("/")
 RENDER_BACKEND_HOOK_URL = os.getenv("RENDER_BACKEND_HOOK_URL", "")
 FINSIGHT_DEPLOY_HOOK_URL = os.getenv("FINSIGHT_DEPLOY_HOOK_URL", "")
+RENDER_API_KEY = os.getenv("RENDER_API_KEY", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 OUTLOOK_WEBHOOK_URL = os.getenv("OUTLOOK_WEBHOOK_URL", "")
@@ -135,6 +136,10 @@ async def init_mongodb_ttl():
                 saved_webhook = settings_doc.get("outlook_webhook_url")
                 if saved_webhook:
                     OUTLOOK_WEBHOOK_URL = saved_webhook
+                saved_render = settings_doc.get("render_api_key")
+                if saved_render:
+                    RENDER_API_KEY = saved_render
+                    print("[MONGO ATLAS SETTINGS] Loaded Render Cloud API Key.")
         except Exception as ex:
             print(f"[MONGO ATLAS SETTINGS WARN] {ex}")
 
@@ -930,10 +935,41 @@ async def health_check_daemon():
                             cached_health["mongo"]["latency"] = max(int(latency * 0.6), 15)
                     else:
                         consecutive_probe_failures += 1
-                        cached_health["gateway"]["status"] = "degraded"
-                        cached_health["gateway"]["latency"] = latency
-                        if "mongo" not in healing_in_progress:
-                            cached_health["mongo"]["status"] = "degraded"
+                        # If HTTP 502/503/504 (Service Suspended/Bad Gateway) or 404
+                        if response.status_code >= 500 or response.status_code == 404:
+                            if consecutive_probe_failures >= 2:
+                                was_not_failed = cached_health["gateway"]["status"] != "failed"
+                                cached_health["gateway"]["status"] = "failed"
+                                cached_health["gateway"]["latency"] = 0
+                                if "mongo" not in healing_in_progress:
+                                    cached_health["mongo"]["status"] = "degraded"
+                                    cached_health["mongo"]["latency"] = 0
+                                
+                                if was_not_failed:
+                                    incident_id = f"INC-PROBE-{random.randint(1000, 9999)}"
+                                    await add_log("ANOMALY", f"[{incident_id}] FinSight Gateway returned HTTP {response.status_code} (Service Suspended or Crashed on Render).")
+                                    incident_doc = {
+                                        "id": incident_id,
+                                        "service": "FinSight API Gateway",
+                                        "service_id": "gateway",
+                                        "title": f"FinSight Container Failure (HTTP {response.status_code})",
+                                        "status": "Active (Failed)",
+                                        "time": get_ist_time_str(),
+                                        "severity": "CRITICAL",
+                                        "confidence": 99,
+                                        "rootCause": f"Health probe returned HTTP {response.status_code}. Service is suspended or crashed on Render Cloud.",
+                                        "remediation": "Auto-Heal container restart / resume via Render API."
+                                    }
+                                    create_incident_callback(incident_doc)
+                                    await broadcast_telemetry_now()
+                            else:
+                                cached_health["gateway"]["status"] = "degraded"
+                                cached_health["gateway"]["latency"] = 0
+                        else:
+                            cached_health["gateway"]["status"] = "degraded"
+                            cached_health["gateway"]["latency"] = latency
+                            if "mongo" not in healing_in_progress:
+                                cached_health["mongo"]["status"] = "degraded"
                 except Exception as ex:
                     consecutive_probe_failures += 1
                     # After 2 consecutive failed probes (or if container down/suspended on Render), mark as failed!
@@ -1041,13 +1077,49 @@ async def autonomous_heal(service_id: str, service_name: str):
     }
     create_incident_callback(incident_doc)
 
-    if FINSIGHT_DEPLOY_HOOK_URL and "gateway" in service_id.lower():
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(FINSIGHT_DEPLOY_HOOK_URL)
-            await add_log("INFO", f"[{incident_id}] Render API accepted reboot command for {display_name}.")
-        except Exception as e:
-            await add_log("ANOMALY", f"[{incident_id}] Render API reboot command warning: {str(e)}")
+    if "gateway" in service_id.lower():
+        rebooted_via_api = False
+        if RENDER_API_KEY:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {RENDER_API_KEY}",
+                    "Accept": "application/json"
+                }
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    srv_res = await client.get("https://api.render.com/v1/services?name=finsight", headers=headers)
+                    if srv_res.status_code == 200:
+                        services_list = srv_res.json()
+                        if services_list and isinstance(services_list, list):
+                            target_svc = services_list[0].get("service", services_list[0])
+                            target_id = target_svc.get("id")
+                            is_suspended = target_svc.get("suspended") == "suspended"
+                            if is_suspended:
+                                # Resume suspended service!
+                                resume_res = await client.post(f"https://api.render.com/v1/services/{target_id}/resume", headers=headers)
+                                if resume_res.status_code in (200, 202):
+                                    rebooted_via_api = True
+                                    await add_log("INFO", f"[{incident_id}] Render Cloud REST API: Successfully RESUMED suspended service {display_name} ({target_id}).")
+                                else:
+                                    await add_log("ANOMALY", f"[{incident_id}] Render Resume API notice: HTTP {resume_res.status_code}")
+                            else:
+                                # Restart active container!
+                                restart_res = await client.post(f"https://api.render.com/v1/services/{target_id}/restart", headers=headers)
+                                if restart_res.status_code in (200, 202):
+                                    rebooted_via_api = True
+                                    await add_log("INFO", f"[{incident_id}] Render Cloud REST API: Container reboot command accepted for {display_name} ({target_id}).")
+            except Exception as ex:
+                await add_log("ANOMALY", f"[{incident_id}] Render Cloud API notice: {str(ex)}")
+
+        if not rebooted_via_api and FINSIGHT_DEPLOY_HOOK_URL:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    res = await client.post(FINSIGHT_DEPLOY_HOOK_URL)
+                    if res.status_code in (200, 201):
+                        await add_log("INFO", f"[{incident_id}] Render API accepted reboot deploy hook for {display_name}.")
+                    else:
+                        await add_log("ANOMALY", f"[{incident_id}] Render Deploy Hook returned HTTP {res.status_code}: Deploy hooks cannot unsuspend services. Add RENDER_API_KEY to enable live resume.")
+            except Exception as e:
+                await add_log("ANOMALY", f"[{incident_id}] Render API reboot command warning: {str(e)}")
 
     await asyncio.sleep(4)
     if service_id in cached_health:
@@ -2837,3 +2909,31 @@ async def simulate_service_failure(service_id: str):
     
     await broadcast_telemetry_now()
     return {"status": "simulated", "incident_id": incident_id, "service": service_id}
+
+@app.get("/api/config/render")
+async def get_render_config():
+    global RENDER_API_KEY
+    masked = f"rnd_...{RENDER_API_KEY[-4:]}" if len(RENDER_API_KEY) > 8 else ("Configured" if RENDER_API_KEY else "")
+    return {
+        "configured": bool(RENDER_API_KEY),
+        "api_key_masked": masked
+    }
+
+@app.post("/api/config/render")
+async def update_render_config(payload: dict):
+    global RENDER_API_KEY
+    api_key = (payload.get("api_key") or "").strip()
+    if api_key:
+        RENDER_API_KEY = api_key
+        if db_client and mongo_connected and sentinel_db is not None:
+            try:
+                await sentinel_db["settings"].update_one(
+                    {"_id": "render_config"},
+                    {"$set": {"api_key": api_key, "updatedAt": datetime.now(timezone.utc)}},
+                    upsert=True
+                )
+            except Exception:
+                pass
+        await add_log("INFO", "Render Cloud REST API credentials updated and persisted to MongoDB Atlas.")
+        return {"success": True, "message": "Render Cloud API key configured successfully."}
+    return {"success": False, "error": "API Key cannot be empty."}

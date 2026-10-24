@@ -5,7 +5,7 @@ import {
   Shield, ChevronDown, Activity, AlertTriangle, Clock, Server,
   Cpu, MemoryStick, HardDrive, Wifi, Zap, Loader2, CheckCircle2,
   X, Terminal, Sparkles, Lock, Unlock, Database, Globe, MessagesSquare,
-  CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck, Send, FileCode,
+  CreditCard, KeyRound, PlayCircle, WifiOff, CheckCheck, Send, FileCode, Cloud,
   Flame, BellRing, Settings, RefreshCw, Check, ShieldAlert, ShieldCheck, Mail, UserX, ExternalLink, HelpCircle, Ban, Trash2, Copy
 } from "lucide-react";
 import LiveTrafficChart from "./components/LiveTrafficChart";
@@ -357,6 +357,11 @@ export default function App() {
   const [savingOutlook, setSavingOutlook] = useState(false);
   const [testingOutlook, setTestingOutlook] = useState(false);
   const [isSimulatingFailure, setIsSimulatingFailure] = useState(false);
+  const [showRenderModal, setShowRenderModal] = useState(false);
+  const [renderApiKeyInput, setRenderApiKeyInput] = useState("");
+  const [renderConfigured, setRenderConfigured] = useState(false);
+  const [renderStatusMsg, setRenderStatusMsg] = useState("");
+  const [savingRender, setSavingRender] = useState(false);
 
   const terminalRef = useRef(null);
   const wsRef = useRef(null);
@@ -507,6 +512,15 @@ export default function App() {
         }
       })
       .catch(() => {});
+
+    axios.get(`${BACKEND_HTTP_URL}/api/config/render`)
+      .then((res) => {
+        if (res.data?.configured) {
+          setRenderConfigured(true);
+          if (res.data?.api_key_masked) setRenderApiKeyInput(res.data.api_key_masked);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // ACTION: Connect Live Gmail / SMTP credentials
@@ -536,6 +550,32 @@ export default function App() {
       setSmtpErrorMsg(err.response?.data?.error || "SMTP verification failed. Check app password.");
     } finally {
       setSmtpConnecting(false);
+    }
+  };
+
+  // ACTION: Connect Render Cloud REST API Key (Enables Autonomous Unsuspend & Container Reboot)
+  const handleSaveRenderConfig = async (e) => {
+    if (e) e.preventDefault();
+    if (!renderApiKeyInput.trim()) return;
+    setSavingRender(true);
+    setRenderStatusMsg("");
+    try {
+      const res = await axios.post(`${BACKEND_HTTP_URL}/api/config/render`, {
+        api_key: renderApiKeyInput.trim()
+      });
+      if (res.data?.success) {
+        setRenderConfigured(true);
+        setRenderStatusMsg("✅ Render Cloud API connected! Autonomous container resume is now active.");
+        setEmailSuccessMsg("☁️ Render Cloud REST API Connected!");
+        setTimeout(() => setEmailSuccessMsg(""), 5000);
+        setTimeout(() => setShowRenderModal(false), 2000);
+      } else {
+        setRenderStatusMsg(res.data?.error || "Failed to update Render API key.");
+      }
+    } catch (err) {
+      setRenderStatusMsg("Network error saving Render API key.");
+    } finally {
+      setSavingRender(false);
     }
   };
 
@@ -1056,29 +1096,53 @@ Status: ${inc.status || "Mitigated"}`;
               <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
                 <Server size={16} color="#a5b4fc" /> Monitored Services <span style={{ color: "#64748b", fontWeight: 400 }}>· {activeWorkspace?.label}</span>
               </h2>
-              <button
-                id="chaos-fail-container-btn"
-                onClick={() => handleSimulateContainerFailure("gateway")}
-                disabled={isSimulatingFailure}
-                title="Chaos Engineering: Simulate FinSight container crash to demonstrate Autonomous Self-Healing"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "0.32rem 0.75rem",
-                  borderRadius: 8,
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  background: isSimulatingFailure ? "rgba(239, 68, 68, 0.28)" : "rgba(239, 68, 68, 0.12)",
-                  color: "#fca5a5",
-                  border: "1px solid rgba(239, 68, 68, 0.35)",
-                  cursor: isSimulatingFailure ? "not-allowed" : "pointer",
-                  transition: "all 0.2s ease"
-                }}
-              >
-                <Flame size={12} color="#f87171" />
-                {isSimulatingFailure ? "Crashing Container..." : "💥 Simulate Container Outage"}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  onClick={() => setShowRenderModal(true)}
+                  className="sso-btn"
+                  title="Configure Render Cloud API Key for autonomous unsuspend & reboot"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0.32rem 0.75rem",
+                    borderRadius: 8,
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    background: renderConfigured ? "rgba(34, 197, 94, 0.12)" : "rgba(99, 102, 241, 0.12)",
+                    color: renderConfigured ? "#86efac" : "#c7d2fe",
+                    border: renderConfigured ? "1px solid rgba(34, 197, 94, 0.35)" : "1px solid rgba(99, 102, 241, 0.35)",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                >
+                  <Cloud size={12} color={renderConfigured ? "#22c55e" : "#818cf8"} />
+                  {renderConfigured ? "Render API: Connected" : "☁️ Render API"}
+                </button>
+                <button
+                  id="chaos-fail-container-btn"
+                  onClick={() => handleSimulateContainerFailure("gateway")}
+                  disabled={isSimulatingFailure}
+                  title="Chaos Engineering: Simulate FinSight container crash to demonstrate Autonomous Self-Healing"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0.32rem 0.75rem",
+                    borderRadius: 8,
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    background: isSimulatingFailure ? "rgba(239, 68, 68, 0.28)" : "rgba(239, 68, 68, 0.12)",
+                    color: "#fca5a5",
+                    border: "1px solid rgba(239, 68, 68, 0.35)",
+                    cursor: isSimulatingFailure ? "not-allowed" : "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                >
+                  <Flame size={12} color="#f87171" />
+                  {isSimulatingFailure ? "Crashing Container..." : "💥 Simulate Container Outage"}
+                </button>
+              </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {visibleServices.length === 0 && (
@@ -2032,6 +2096,77 @@ Status: ${inc.status || "Mitigated"}`;
                 >
                   {savingOutlook ? <Loader2 size={13} className="sso-spin" /> : <Check size={13} />}
                   Save Outlook Settings
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* RENDER CLOUD REST API MODAL */}
+      <AnimatePresence>
+        {showRenderModal && (
+          <motion.div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowRenderModal(false)}>
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }} />
+            <motion.div initial={{ opacity: 0, scale: 0.94, y: 12 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 8 }} onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: "100%", maxWidth: 540, borderRadius: 16, border: "1px solid rgba(99,102,241,0.4)", padding: 24, display: "flex", flexDirection: "column", gap: 16, background: "linear-gradient(160deg, #14113a, #0c0a1f)", boxShadow: "0 20px 50px rgba(0,0,0,0.6)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <h3 style={{ fontSize: 16.5, fontWeight: 600, color: "#ffffff", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Cloud size={18} color="#a5b4fc" /> Render Cloud REST API Integration
+                </h3>
+                <button onClick={() => setShowRenderModal(false)} className="sso-btn" style={{ background: "transparent", border: "none", color: "#94a3b8", padding: 4 }}><X size={16} /></button>
+              </div>
+
+              <p style={{ fontSize: 12.5, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>
+                Deploy Hooks only trigger rebuilds on active containers. Configuring your <strong>Render API Key</strong> allows Sentinel SmartOps to programmatically <strong>resume suspended services</strong> and reboot live containers via Render's official REST API.
+              </p>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 600 }}>
+                  Render API Token (Bearer)
+                </label>
+                <input
+                  type="password"
+                  placeholder={renderConfigured ? "rnd_•••••••••••••••• (Active & Persisted)" : "rnd_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+                  value={renderApiKeyInput}
+                  onChange={(e) => setRenderApiKeyInput(e.target.value)}
+                  style={{
+                    padding: "0.6rem 0.85rem",
+                    borderRadius: 9,
+                    border: renderConfigured ? "1px solid rgba(34,197,94,0.4)" : "1px solid rgba(99,102,241,0.4)",
+                    background: "rgba(0,0,0,0.45)",
+                    color: "#f8fafc",
+                    fontSize: 12.5,
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "#64748b" }}>
+                  Obtain your key from: <strong>Render Dashboard → Account Settings → API Keys → Create API Key</strong>
+                </span>
+              </div>
+
+              {renderStatusMsg && (
+                <p style={{ fontSize: 12, color: renderStatusMsg.startsWith("✅") ? "#86efac" : "#fca5a5", margin: 0, padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                  {renderStatusMsg}
+                </p>
+              )}
+
+              <div style={{ display: "flex", gap: 9, justifyContent: "flex-end", marginTop: 6 }}>
+                <button
+                  onClick={() => setShowRenderModal(false)}
+                  className="sso-btn"
+                  style={{ padding: "0.5rem 0.9rem", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", fontSize: 12 }}
+                >
+                  Close
+                </button>
+                <button
+                  onClick={handleSaveRenderConfig}
+                  disabled={savingRender || !renderApiKeyInput.trim()}
+                  className="sso-btn"
+                  style={{ padding: "0.5rem 1.1rem", borderRadius: 8, border: "1px solid #6366f1", background: "rgba(99,102,241,0.35)", color: "#ffffff", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  {savingRender ? <Loader2 size={13} className="sso-spin" /> : <Check size={13} />}
+                  Connect Render API
                 </button>
               </div>
             </motion.div>
