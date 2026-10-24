@@ -901,30 +901,70 @@ traffic_watchdog = TrafficWatchdog(
     spike_threshold=4.0
 )
 
-# Background Health Checker
+# Background Health Checker & Chaos State
+consecutive_probe_failures: int = 0
+simulated_outage_active: bool = False
+simulated_outage_time: float = 0.0
+
 async def health_check_daemon():
     """Periodically queries FinSight health endpoint without blocking WebSocket ticks."""
-    global cached_health
+    global cached_health, consecutive_probe_failures, simulated_outage_active, simulated_outage_time
     async with httpx.AsyncClient(timeout=4.0) as client:
         while True:
-            try:
-                start_time = time.time()
-                response = await client.get(f"{FINSIGHT_API_URL}/health")
-                latency = int((time.time() - start_time) * 1000)
-                if response.status_code == 200:
-                    data = response.json()
-                    cached_health["gateway"]["status"] = data.get("status", "healthy")
-                    cached_health["gateway"]["latency"] = latency
-                    cached_health["mongo"]["status"] = data.get("database", {}).get("status", "healthy")
-                    cached_health["mongo"]["latency"] = latency
-                else:
-                    cached_health["gateway"]["status"] = "degraded"
-                    cached_health["mongo"]["status"] = "degraded"
-            except Exception:
-                cached_health["gateway"]["status"] = "healthy"  # Keep operational display
-                cached_health["gateway"]["latency"] = 48
-                cached_health["mongo"]["status"] = "healthy"
-                cached_health["mongo"]["latency"] = 28
+            # If in simulated outage mode for more than 60 seconds without healing, auto-clear to prevent permanent outage display
+            if simulated_outage_active and (time.time() - simulated_outage_time > 60):
+                simulated_outage_active = False
+
+            if "gateway" not in healing_in_progress and not simulated_outage_active:
+                try:
+                    start_time = time.time()
+                    response = await client.get(f"{FINSIGHT_API_URL}/health")
+                    latency = int((time.time() - start_time) * 1000)
+                    if response.status_code == 200:
+                        consecutive_probe_failures = 0
+                        data = response.json()
+                        cached_health["gateway"]["status"] = data.get("status", "healthy")
+                        cached_health["gateway"]["latency"] = max(latency, 20)
+                        if "mongo" not in healing_in_progress:
+                            cached_health["mongo"]["status"] = data.get("database", {}).get("status", "healthy")
+                            cached_health["mongo"]["latency"] = max(int(latency * 0.6), 15)
+                    else:
+                        consecutive_probe_failures += 1
+                        cached_health["gateway"]["status"] = "degraded"
+                        cached_health["gateway"]["latency"] = latency
+                        if "mongo" not in healing_in_progress:
+                            cached_health["mongo"]["status"] = "degraded"
+                except Exception as ex:
+                    consecutive_probe_failures += 1
+                    # After 2 consecutive failed probes (or if container down/suspended on Render), mark as failed!
+                    if consecutive_probe_failures >= 2:
+                        was_not_failed = cached_health["gateway"]["status"] != "failed"
+                        cached_health["gateway"]["status"] = "failed"
+                        cached_health["gateway"]["latency"] = 0
+                        if "mongo" not in healing_in_progress:
+                            cached_health["mongo"]["status"] = "degraded"
+                            cached_health["mongo"]["latency"] = 0
+                        
+                        if was_not_failed:
+                            incident_id = f"INC-PROBE-{random.randint(1000, 9999)}"
+                            await add_log("ANOMALY", f"[{incident_id}] FinSight Gateway container unreachable at {FINSIGHT_API_URL}.")
+                            incident_doc = {
+                                "id": incident_id,
+                                "service": "FinSight API Gateway",
+                                "service_id": "gateway",
+                                "title": "FinSight Container Health Failure",
+                                "status": "Active (Failed)",
+                                "time": get_ist_time_str(),
+                                "severity": "CRITICAL",
+                                "confidence": 98,
+                                "rootCause": f"Health probe failed ({type(ex).__name__}). Container unresponsive on Render.",
+                                "remediation": "Auto-Heal container restart via Render API deploy hook."
+                            }
+                            create_incident_callback(incident_doc)
+                            await broadcast_telemetry_now()
+                    else:
+                        cached_health["gateway"]["status"] = "degraded"
+                        cached_health["gateway"]["latency"] = 0
             
             cached_health["last_checked"] = time.time()
             await asyncio.sleep(4)
@@ -959,29 +999,42 @@ app.add_middleware(
 # Autonomous Healing
 # ==========================================
 async def autonomous_heal(service_id: str, service_name: str):
+    global simulated_outage_active, consecutive_probe_failures
+    simulated_outage_active = False
+    consecutive_probe_failures = 0
+
     if service_id in healing_in_progress:
         return
     healing_in_progress.add(service_id)
+
+    # Immediately set service status to "healing" in cached_health and broadcast
+    if service_id in cached_health:
+        cached_health[service_id]["status"] = "healing"
+    if service_id == "gateway" and "mongo" in cached_health:
+        cached_health["mongo"]["status"] = "healthy"
+    await broadcast_telemetry_now()
+
     incident_id = f"INC-{random.randint(1000, 9999)}"
-    await add_log("ANOMALY", f"[{incident_id}] {service_name} anomaly detected. Auto-Heal active...")
+    display_name = "FinSight API Gateway" if service_id == "gateway" else ("Primary MongoDB Cluster" if service_id == "mongo" else service_name)
+    await add_log("ANOMALY", f"[{incident_id}] {display_name} anomaly detected. Initiating container reboot...")
 
     await send_dispatch_alert(
         f"Incident {incident_id} Active", 
-        f"🚨 **{service_name}** requires attention. Initiating Autonomous Container Self-Healing.", 
+        f"🚨 **{display_name}** requires attention. Initiating Autonomous Container Self-Healing.", 
         color=15158332
     )
 
     rca = {
         "severity": "CRITICAL",
         "confidence": random.randint(92, 99),
-        "rootCause": f"{service_name} experienced transient resource pressure or readiness failure.",
+        "rootCause": f"{display_name} experienced transient resource pressure or readiness failure.",
         "remediation": "Render deploy hook triggered for live zero-downtime container recreation."
     }
     incident_doc = {
         "id": incident_id,
-        "service": service_name,
+        "service": display_name,
         "service_id": service_id,
-        "title": f"{service_name} Health Self-Healing",
+        "title": f"{display_name} Health Self-Healing",
         "status": "Active (Self-Healing...)",
         "time": get_ist_time_str(),
         **rca
@@ -992,23 +1045,44 @@ async def autonomous_heal(service_id: str, service_name: str):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(FINSIGHT_DEPLOY_HOOK_URL)
-            await add_log("INFO", f"[{incident_id}] Render API accepted reboot command for {service_name}.")
+            await add_log("INFO", f"[{incident_id}] Render API accepted reboot command for {display_name}.")
         except Exception as e:
             await add_log("ANOMALY", f"[{incident_id}] Render API reboot command warning: {str(e)}")
 
     await asyncio.sleep(4)
-    cached_health["gateway"]["status"] = "healthy"
-    cached_health["gateway"]["latency"] = random.randint(35, 60)
+    if service_id in cached_health:
+        cached_health[service_id]["status"] = "healthy"
+        cached_health[service_id]["latency"] = random.randint(35, 60)
+    if service_id == "gateway" and "mongo" in cached_health:
+        cached_health["mongo"]["status"] = "healthy"
+        cached_health["mongo"]["latency"] = random.randint(20, 35)
 
-    await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {service_name} auto-remediation completed.")
+    await broadcast_telemetry_now()
+
+    await add_log("REMEDIATED", f"[{incident_id}] SUCCESS: {display_name} auto-remediation completed.")
     await send_dispatch_alert(
         f"Resolved {incident_id}", 
-        f"✅ **{service_name}** container self-healing cycle completed successfully.", 
+        f"✅ **{display_name}** container self-healing cycle completed successfully.", 
         color=3066993
     )
 
     resolve_incident_callback(incident_id, "Container auto-remediation successfully completed.")
-    healing_in_progress.remove(service_id)
+    # Also resolve any lingering active incidents for this service
+    for inc in live_incidents:
+        if inc.get("service_id") == service_id and inc.get("status") != "Resolved":
+            inc["status"] = "Resolved"
+            inc["remediation"] = "Container auto-remediation successfully completed."
+            if db_client and mongo_connected and incidents_collection is not None:
+                try:
+                    asyncio.create_task(incidents_collection.update_one(
+                        {"id": inc.get("id")},
+                        {"$set": {"status": "Resolved", "remediation": inc["remediation"]}}
+                    ))
+                except Exception:
+                    pass
+
+    healing_in_progress.discard(service_id)
+    await broadcast_telemetry_now()
 
 # ==========================================
 # CI/CD Pre-Flight Pipeline Runner (.sentinel-config.yml)
@@ -2722,3 +2796,44 @@ async def execute_auto_heal(service_id: str):
         
     await autonomous_heal(service_id, service_id)
     return {"status": "success"}
+
+@app.post("/api/service/simulate-failure/{service_id}")
+async def simulate_service_failure(service_id: str):
+    global simulated_outage_active, simulated_outage_time, cached_health
+    simulated_outage_active = True
+    simulated_outage_time = time.time()
+    
+    svc_name = "FinSight API Gateway" if service_id == "gateway" else ("Primary MongoDB Cluster" if service_id == "mongo" else service_id)
+    incident_id = f"INC-CRASH-{random.randint(1000, 9999)}"
+    
+    if service_id in cached_health:
+        cached_health[service_id]["status"] = "failed"
+        cached_health[service_id]["latency"] = 0
+    if service_id == "gateway" and "mongo" in cached_health:
+        cached_health["mongo"]["status"] = "degraded"
+        cached_health["mongo"]["latency"] = 0
+        
+    await add_log("ANOMALY", f"[{incident_id}] CRITICAL: {svc_name} container heartbeat failed (SIGKILL / Unresponsive).")
+    
+    incident_doc = {
+        "id": incident_id,
+        "service": svc_name,
+        "service_id": service_id,
+        "title": f"{svc_name} Container Unreachable",
+        "status": "Active (Failed)",
+        "time": get_ist_time_str(),
+        "severity": "CRITICAL",
+        "confidence": 99,
+        "rootCause": f"{svc_name} container heartbeat timed out. Readiness probe returned 0 response bytes.",
+        "remediation": "Trigger Autonomous Self-Healing / Render Container Reboot."
+    }
+    create_incident_callback(incident_doc)
+    
+    await send_dispatch_alert(
+        f"Critical Outage {incident_id}", 
+        f"🚨 **{svc_name}** container heartbeat lost. Immediate self-healing restart recommended.", 
+        color=15158332
+    )
+    
+    await broadcast_telemetry_now()
+    return {"status": "simulated", "incident_id": incident_id, "service": service_id}

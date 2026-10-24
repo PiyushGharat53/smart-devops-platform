@@ -113,7 +113,7 @@ function StatusDot({ status }) {
   const meta = STATUS_META[status] || STATUS_META.failed;
   return (
     <span style={{ position: "relative", display: "inline-flex", height: 10, width: 10 }}>
-      {status !== "failed" && <span className="sso-ping" style={{ position: "absolute", height: "100%", width: "100%", borderRadius: "9999px", backgroundColor: meta.color }} />}
+      <span className="sso-ping" style={{ position: "absolute", height: "100%", width: "100%", borderRadius: "9999px", backgroundColor: meta.color }} />
       <span style={{ position: "relative", height: 10, width: 10, borderRadius: "9999px", backgroundColor: meta.color }} />
     </span>
   );
@@ -356,6 +356,7 @@ export default function App() {
   const [outlookStatusMsg, setOutlookStatusMsg] = useState("");
   const [savingOutlook, setSavingOutlook] = useState(false);
   const [testingOutlook, setTestingOutlook] = useState(false);
+  const [isSimulatingFailure, setIsSimulatingFailure] = useState(false);
 
   const terminalRef = useRef(null);
   const wsRef = useRef(null);
@@ -631,6 +632,20 @@ Status: ${inc.status || "Mitigated"}`;
       console.error("Real burst error", err);
     } finally {
       setTimeout(() => setIsSimulating(false), 1500);
+    }
+  };
+
+  // ACTION: Chaos Engineering - Simulate Container Outage to demonstrate Auto-Healing
+  const handleSimulateContainerFailure = async (serviceId = "gateway") => {
+    setIsSimulatingFailure(true);
+    try {
+      await axios.post(`${BACKEND_HTTP_URL}/api/service/simulate-failure/${serviceId}`);
+      setEmailSuccessMsg(`💥 Container failure injected on ${serviceId === "gateway" ? "FinSight API Gateway" : serviceId}. Auto-Heal triggered.`);
+      setTimeout(() => setEmailSuccessMsg(""), 5000);
+    } catch (err) {
+      console.error("Failed to simulate service failure", err);
+    } finally {
+      setTimeout(() => setIsSimulatingFailure(false), 2000);
     }
   };
 
@@ -1037,9 +1052,34 @@ Status: ${inc.status || "Mitigated"}`;
         <div className="sso-main-grid">
           {/* LEFT COLUMN: MONITORED SERVICES */}
           <GlassPanel className="sso-col-span-3" style={{ padding: "1.25rem", display: "flex", flexDirection: "column", gap: 16 }}>
-            <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
-              <Server size={16} color="#a5b4fc" /> Monitored Services <span style={{ color: "#64748b", fontWeight: 400 }}>· {activeWorkspace?.label}</span>
-            </h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <h2 style={{ fontSize: 14.5, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 8, margin: 0 }}>
+                <Server size={16} color="#a5b4fc" /> Monitored Services <span style={{ color: "#64748b", fontWeight: 400 }}>· {activeWorkspace?.label}</span>
+              </h2>
+              <button
+                id="chaos-fail-container-btn"
+                onClick={() => handleSimulateContainerFailure("gateway")}
+                disabled={isSimulatingFailure}
+                title="Chaos Engineering: Simulate FinSight container crash to demonstrate Autonomous Self-Healing"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "0.32rem 0.75rem",
+                  borderRadius: 8,
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  background: isSimulatingFailure ? "rgba(239, 68, 68, 0.28)" : "rgba(239, 68, 68, 0.12)",
+                  color: "#fca5a5",
+                  border: "1px solid rgba(239, 68, 68, 0.35)",
+                  cursor: isSimulatingFailure ? "not-allowed" : "pointer",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                <Flame size={12} color="#f87171" />
+                {isSimulatingFailure ? "Crashing Container..." : "💥 Simulate Container Outage"}
+              </button>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {visibleServices.length === 0 && (
                 <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>No services registered under this workspace yet.</p>
@@ -1061,8 +1101,26 @@ Status: ${inc.status || "Mitigated"}`;
                       </div>
                     </div>
                     {(svc.status === "degraded" || svc.status === "failed") && (
-                      <button onClick={() => healService(svc.id)} className="sso-btn sso-heal-btn" style={{ display: "flex", alignItems: "center", gap: 6, padding: "0.4rem 0.75rem", borderRadius: 8, fontSize: 12, backgroundColor: "rgba(139,92,246,0.18)", color: "#c4b5fd", border: "1px solid rgba(139,92,246,0.4)" }}>
-                        <Zap size={13} /> Auto-Heal
+                      <button 
+                        onClick={() => healService(svc.id)} 
+                        className="sso-btn sso-heal-btn" 
+                        title="Trigger autonomous container recreation hook on Render Cloud"
+                        style={{ 
+                          display: "flex", 
+                          alignItems: "center", 
+                          gap: 6, 
+                          padding: "0.42rem 0.85rem", 
+                          borderRadius: 8, 
+                          fontSize: 12, 
+                          fontWeight: 600, 
+                          backgroundColor: "rgba(139,92,246,0.25)", 
+                          color: "#e0e7ff", 
+                          border: "1px solid rgba(139,92,246,0.6)",
+                          boxShadow: "0 0 12px rgba(139,92,246,0.35)",
+                          cursor: "pointer"
+                        }}
+                      >
+                        <Zap size={13} color="#c4b5fd" fill="#c4b5fd" /> Reboot &amp; Auto-Heal
                       </button>
                     )}
                     {svc.status === "healing" && <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#c4b5fd" }}><Loader2 size={13} className="sso-spin" /> Healing…</div>}
